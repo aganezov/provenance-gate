@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.uv/
+*.egg-info/
+build/
+dist/
+
+# Claude Code (local, per-user — shared settings.json is tracked)
+.claude/settings.local.json
+
+# Runtime / scratch
+*.db
+.playwright-mcp/
+
+# OS
+.DS_Store
