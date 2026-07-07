@@ -18,7 +18,7 @@ if [ ! -x "$BIN" ]; then
 fi
 [ -n "$BIN" ] || { echo "claude-science/operon launcher not found; set CS_BIN" >&2; exit 1; }
 
-if ! "$BIN" status 2>/dev/null | grep -q '"running": *true'; then
+if ! "$BIN" status 2>/dev/null | grep -qE '"running"[[:space:]]*:[[:space:]]*true'; then
   echo "CS daemon is not running. Start it with: $BIN serve" >&2
   exit 1
 fi

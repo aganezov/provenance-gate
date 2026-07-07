@@ -57,8 +57,12 @@ appear — click the **exact** "Send", never the "more" one (Block B does); (b) 
 build encapsulated the composer in **shadow DOM** where `querySelector` returned 0 — so
 Block B locates it with a shadow-piercing BFS (a harmless superset in the light-DOM case)
 and still returns the editor's `center` for a *precise* coordinate fallback instead of the
-old hardcoded `[620,677]` that only worked at 1080×768. When a build changes the composer,
-run **Block D** to re-aim.
+old hardcoded `[620,677]` that only worked at 1080×768. **The fallback uses the SAME JS
+insert**, not MCP typing: coordinate-click `center` to *focus* the composer, then
+`document.execCommand("insertText", false, TEXT)` on `document.activeElement` (no selector
+needed — recovers a total selector miss), then click "Send". Verified live that **MCP
+`type` does not register in this editor** and **Enter does not submit** — never rely on
+either. When a build changes the composer, run **Block D** to re-aim.
 
 **3. The approval gate is variable (auto-click VERIFIED firing).** CS interrupts a run
 with an "Allow" / "Allow globally" permission card, typically on the first tool use in a
@@ -88,11 +92,20 @@ payload tiny.
 runs longer fails with *"Runtime.evaluate timed out … the renderer may be frozen"* — even
 though the page keeps working. This bites the settle poll hardest, because CS agent runs
 routinely exceed 45 s (agent spin-up + compute + reviewer; ~215 s seen for a trivial
-task). **Fix:** cap any in-page loop at **~35 s** and make it re-invokable. Block C returns
-`{settled:true}` when the run finishes, or `{stillRunning:true}` when it hits the cap while
-still busy — in which case you just call Block C again. A run under ~35 s settles in one
-call; a 3-minute run takes ~6 calls (still far fewer turns than polling every turn). Never
-raise the cap toward 45 s "to be safe" — that is the failure, not the fix.
+task). **Fix:** cap any in-page loop at **~30 s** and make it re-invokable — and count any
+**post-loop DOM work against the same budget**. Block C returns `{settled:true}` when the
+run finishes, or `{stillRunning:true}` when it hits the cap while still busy — in which case
+you just call Block C again. A run under ~30 s settles in one call; a 3-minute run takes ~6
+calls (still far fewer turns than polling every turn). Never raise the cap toward 45 s "to
+be safe" — that is the failure, not the fix. **Watch the *scan*, not just the loop:**
+`artifactsSeen` first walked every element's `textContent` (which concatenates the whole
+growing transcript) and added ~8 s *after* a long run — right up against the timeout. Block
+C now scans only leaf nodes, stops at 25 hits, and reports `elapsedMs` (loop) separately
+from `scanMs` (scan) so the margin stays visible. And note the **other** timeout cause: a
+poll can hit the 45 s limit **even under the cap** if CS transiently blocks the shared main
+thread during a heavy run (your injected JS runs on that same thread, so it can't return).
+Same error text; not a bug in your loop — treat a Block C timeout **exactly like
+`stillRunning`** and re-invoke. Seen live.
 
 ---
 
@@ -105,7 +118,7 @@ raise the cap toward 45 s "to be safe" — that is the failure, not the fix.
 - Therefore: text/DOM reads over screenshots; **batch the deterministic prefix**
   (create → submit are fixed steps); and **collapse each variable agent run into the
   bounded settle poll** (Block C — one call for a short run, a few for a long one, each
-  capped at ~35 s per gotcha #8) rather than many read-then-check turns.
+  capped at ~30 s per gotcha #8) rather than many read-then-check turns.
 - Measured on a real run: ~30 s of CS agent work carried ~130 s of driving overhead
   before this shaping — almost all of it removable.
 

@@ -64,7 +64,11 @@ immediately before navigating — it expires fast, and a daemon restart expires 
 ### Step 3 — Create / open a project
 Paste **Block A** of `scripts/cs_drive.js` into `javascript_tool` (substitute the
 project name). It clicks *New project*, sets the name via React's native setter, clicks
-*Create*, and waits for the `/projects/` nav — all in one call. Returns `{ok, url}`.
+*Create* (re-clicking inside the nav-wait, since the button can start briefly disabled),
+and waits for the `/projects/` nav — all in one call. Returns `{ok, url}`. **Block A needs
+the projects home**: the *New project* button isn't present on a frame/session page, so
+`navigate` to `http://127.0.0.1:8765/` first if you're mid-session (a `{reason:"no 'New
+project' button"}` means you're not on the home page).
 
 ### Step 4 — Submit a prompt
 Paste **Block B**. On the current build the composer is a **light-DOM** contenteditable
@@ -73,17 +77,32 @@ click the **exact "Send"** button that materializes once there's text — no coo
 click, no Enter key. (Block B also pierces shadow DOM for older builds and returns the
 composer's `center` for a precise coordinate fallback.)
 - `{submitted:true}` → run started, done.
-- `{found:true, inserted:true, submitted:false, center}` → MCP `key Return` (the composer
-  is focused), or coordinate-click `center` → `type` → `key Return`.
-- `{found:false}` → run **Block D** to re-find the composer (a build changed it).
+- `{found:true, inserted:true, submitted:false, center}` → the Send button was slightly
+  delayed; wait ~250 ms and click the exact **"Send"** (or coordinate-click `center`, then Send).
+- `{found:false}` / `{inserted:false}` → the composer selector or insert failed (a build
+  changed it). Recover with the **coordinate + JS-insert** fallback: run **Block D** for
+  `center`, coordinate-click it to *focus* the composer, then run
+  `document.execCommand("insertText", false, TEXT)` on the focused element (no selector
+  needed), then click **"Send"**. ⚠️ MCP `type` does **not** register in this editor and
+  **Enter does not submit** — don't rely on them (both verified live).
 
 ### Step 5 — Wait for the run (re-invokable settle poll)
 Paste **Block C**. It loops *inside the page*, **auto-clicks the "Allow" approval gate**
 the instant it appears, and treats the *Stop* button as the busy signal. It is **bounded
-to ~35 s** because the `javascript_tool` eval hard-times-out near 45 s (CS runs routinely
-exceed that):
+to ~30 s** (headroom under the ~45 s `javascript_tool` eval timeout, which CS runs
+routinely exceed):
 - `{settled:true}` → run done.
 - `{stillRunning:true}` → it hit the cap mid-run — **paste Block C again** until settled.
+- **CDP timeout error** (*"Runtime.evaluate timed out … the renderer may be frozen"*) →
+  CS transiently blocked the shared main thread during the run, so even the capped poll
+  couldn't return in time. The run is fine — treat this **exactly like `stillRunning`**
+  and paste Block C again. (Seen live during a heavy run.)
+
+**False-settle guard:** `settled:true` together with `sawStop:false` **and** an empty
+`artifactsSeen` means the run never actually started — a submit that silently didn't take
+looks "settled" after the grace+idle windows. In that case re-run **Block B** (Step 4)
+rather than trusting the settle. Block B's own `{submitted:true}` is the primary
+confirmation a run started; the poll's `sawStop` is the backstop.
 
 A short run settles in one call; a long run (minutes) takes several — that's expected and
 cheap, and far fewer turns than checking every few seconds. `artifactsSeen` reports the
