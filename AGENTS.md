@@ -22,7 +22,7 @@ code; models only propose, humans confirm/attest.
 
 ## Review & merge
 
-- **Deterministic gates:** `ruff` + `pytest` (see `.github/workflows/ci.yml`). Read pass/fail
+- **Deterministic gates:** `ruff` + `pytest` (see `.github/workflows/ci.yml`, ships with M0). Read pass/fail
   from the authoritative run conclusion, and diagnose any failure from the real logs.
 - **Dual review is advisory** — neither blocks. **Wait for both bots on the _latest_ commit
   before merging.** Auto-review fires on PR **open**; after you push new commits, re-trigger
@@ -56,6 +56,11 @@ Only **commit messages** carry the `Co-Authored-By:` trailer. PR bodies, issues,
 carry **no** trailer or footer.
 
 ## Code review output contract (BOTH reviewers follow this)
+
+**Review priorities (in order):** correctness of the deterministic checks; the read-only
+invariant (`operon-cli.db` opened `mode=ro`, never mutated); safe SQLite/file handling;
+untrusted-input hygiene (user/agent-authored extractor & predicate code is UNTRUSTED — guard
+against injection, unsafe eval, path traversal); maintainability.
 
 When reviewing a pull request, post **one structured summary comment** shaped so a maintainer
 can triage it in two seconds and expand only what matters:
