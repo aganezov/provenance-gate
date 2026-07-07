@@ -201,16 +201,18 @@ await (async () => {
  * BLOCK C — SETTLE POLL (bounded, re-invokable). The single biggest speed lever.
  * A CS agent run is variable-length and routinely exceeds the ~45s CDP eval
  * limit, so this loop is CAPPED at ~35s per call. It auto-clicks the "Allow"
- * approval gate the instant it appears, treats the "Stop" button as the busy
- * signal, and returns a tiny status object.
+ * approval gate the instant it appears, treats the "Stop" button (an icon button,
+ * matched by aria-label since its textContent is empty) as the busy signal, and
+ * returns a tiny status object.
  *
- *   {settled:true}      -> the run is done; read results from the DB.
+ *   {settled:true}      -> the run is done.
  *   {stillRunning:true} -> the ~35s cap hit while the run was busy: CALL THIS
  *                          BLOCK AGAIN (it resumes watching). Repeat until settled.
  *
  * A run shorter than ~35s settles in ONE call. Longer runs take a few calls —
- * still far fewer turns than read-then-check polling. The DB (cs_provenance.py)
- * is the AUTHORITATIVE read of what was produced; `artifactsSeen` is a convenience.
+ * still far fewer turns than read-then-check polling. `artifactsSeen` lists
+ * filenames seen ON SCREEN — browser feedback only; this skill does NOT read the
+ * DB, and the surrounding app is what reads it for the authoritative result.
  * ------------------------------------------------------------------------- */
 await (async () => {
   const CALL_CAP_MS = 35000; // MUST stay < the ~45s CDP eval timeout
