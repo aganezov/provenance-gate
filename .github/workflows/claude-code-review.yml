@@ -1,0 +1,68 @@
+name: Claude review
+
+# Advisory AI code review. Fires when a PR is opened — NOT on every push (that's the
+# "non-exhausting" part). Re-review on demand by commenting "@claude review".
+# Advisory only: ruff / pytest (CI) are the merge gates.
+
+on:
+  # `opened` only: a freshly-opened PR carries no attacker-controlled comments for the
+  # reviewer to ingest, whereas reopened/ready_for_review can (prompt-injection
+  # hardening). Re-review on demand via "@claude review".
+  pull_request:
+    types: [opened]
+
+# Least privilege: grant nothing by default; the job adds only what it needs.
+permissions: {}
+
+# At most one review per PR; reopening/ready cancels an in-flight run.
+concurrency:
+  group: claude-review-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Public-repo abuse guard: only auto-review trusted-authored, SAME-REPO PRs.
+    # - same-repo: fork PRs don't receive repo secrets, so the run would fail.
+    # - trusted author: a stranger's PRs spend zero quota; opt one in via "@claude review".
+    if: github.event.pull_request.head.repo.full_name == github.repository && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+    runs-on: ubuntu-latest
+    # Advisory BY CONSTRUCTION: the action uses this scoped GITHUB_TOKEN for GitHub ops
+    # — pull-requests:write to post the review, contents:read so it CANNOT push code.
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Claude advisory review
+        uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Use the workflow's scoped token for GitHub operations (can comment, cannot push).
+          github_token: ${{ github.token }}
+          # Defense in depth: only ingest the owner's comments.
+          include_comments_by_actor: ${{ github.repository_owner }}
+          # Automation mode does NOT post a comment by default; this enables it.
+          track_progress: true
+          prompt: |
+            Review this pull request as an advisory reviewer.
+            Follow the "Code review output contract" in AGENTS.md:
+            a glanceable verdict line + counts (blockers / suggestions / nits),
+            a findings table (| Sev | Location | Finding | with file:line), and one
+            collapsed <details> per finding with a ```suggestion``` block where useful.
+            Severity: 🔴 Blocker · 🟠 High · 🟡 Medium · 🔵 Nit · 💭 Question.
+
+            This project is the Provenance Gate: a deterministic, claim-level trust gate
+            that runs READ-ONLY over Claude Science (CS). Prioritize, in order:
+            correctness of the deterministic checks; the read-only invariant (we open CS's
+            operon-cli.db mode=ro and only ever write our own sidecar — never mutate CS);
+            safe SQLite/file handling; and maintainability. Later milestones execute
+            user/agent-authored extractor & predicate code against frozen artifacts — treat
+            such inputs as UNTRUSTED (injection, unsafe eval, path traversal).
+
+            Do NOT comment on formatting (ruff owns it); do NOT restate the diff. Be
+            specific and cite file:line. Advisory only; the merge gates are ruff / pytest.
