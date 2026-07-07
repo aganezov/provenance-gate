@@ -32,7 +32,7 @@
  * "Create", and waits for the /projects/ navigation. Returns {ok,url}.
  * ------------------------------------------------------------------------- */
 await (async () => {
-  const NAME = "__PROJECT_NAME__";
+  const NAME = __PROJECT_NAME_JSON__; // caller substitutes a JSON string literal: JSON.stringify(name)
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const byText = (re) =>
     [...document.querySelectorAll("button")].find((b) =>

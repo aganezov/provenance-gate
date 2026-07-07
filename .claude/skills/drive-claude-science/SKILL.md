@@ -62,8 +62,8 @@ cached session may skip straight to the projects list — that's fine). Generate
 immediately before navigating — it expires fast, and a daemon restart expires any login.
 
 ### Step 3 — Create / open a project
-Paste **Block A** of `scripts/cs_drive.js` into `javascript_tool` (substitute the
-project name). It clicks *New project*, sets the name via React's native setter, clicks
+Paste **Block A** of `scripts/cs_drive.js` into `javascript_tool` (substitute
+`__PROJECT_NAME_JSON__` with `JSON.stringify(name)`). It clicks *New project*, sets the name via React's native setter, clicks
 *Create* (re-clicking inside the nav-wait, since the button can start briefly disabled),
 and waits for the `/projects/` nav — all in one call. Returns `{ok, url}`. **Block A needs
 the projects home**: the *New project* button isn't present on a frame/session page, so
@@ -76,9 +76,9 @@ and the verified submit is: locate it → `execCommand insertText` (React regist
 click the **exact "Send"** button that materializes once there's text — no coordinate
 click, no Enter key. (Block B also pierces shadow DOM for older builds and returns the
 composer's `center` for a precise coordinate fallback.)
-> **Substitute `__PROMPT_JSON__` with a JSON string literal** — `JSON.stringify(prompt)` —
-> so quotes, backslashes, and newlines in the prompt can't break the block's JS. (Same for
-> `__PROJECT_NAME__` in Block A if the name isn't a plain identifier.)
+> **Substitute `__PROMPT_JSON__` (Block B) and `__PROJECT_NAME_JSON__` (Block A) with a JSON
+> string literal** — `JSON.stringify(value)` — so quotes, backslashes, and newlines can't
+> break the block's JS. The placeholders are **unquoted**; `JSON.stringify` supplies the quotes.
 - `{submitted:true}` → run started, done.
 - `{found:true, inserted:true, submitted:false, center}` → the Send button was slightly
   delayed; wait ~250 ms and click the exact **"Send"** (or coordinate-click `center`, then Send).
