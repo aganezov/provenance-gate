@@ -76,6 +76,9 @@ and the verified submit is: locate it → `execCommand insertText` (React regist
 click the **exact "Send"** button that materializes once there's text — no coordinate
 click, no Enter key. (Block B also pierces shadow DOM for older builds and returns the
 composer's `center` for a precise coordinate fallback.)
+> **Substitute `__PROMPT_JSON__` with a JSON string literal** — `JSON.stringify(prompt)` —
+> so quotes, backslashes, and newlines in the prompt can't break the block's JS. (Same for
+> `__PROJECT_NAME__` in Block A if the name isn't a plain identifier.)
 - `{submitted:true}` → run started, done.
 - `{found:true, inserted:true, submitted:false, center}` → the Send button was slightly
   delayed; wait ~250 ms and click the exact **"Send"** (or coordinate-click `center`, then Send).
@@ -98,11 +101,13 @@ routinely exceed):
   couldn't return in time. The run is fine — treat this **exactly like `stillRunning`**
   and paste Block C again. (Seen live during a heavy run.)
 
-**False-settle guard:** `settled:true` together with `sawStop:false` **and** an empty
-`artifactsSeen` means the run never actually started — a submit that silently didn't take
-looks "settled" after the grace+idle windows. In that case re-run **Block B** (Step 4)
-rather than trusting the settle. Block B's own `{submitted:true}` is the primary
-confirmation a run started; the poll's `sawStop` is the backstop.
+**Inconclusive-settle guard:** `settled:true` with `sawStop:false` **and** an empty
+`artifactsSeen` is **inconclusive** — not proof the submit failed. A run that finished
+before the poll first looked, a text-only answer, or an off-screen / unmatched-extension
+artifact all look identical. **Do not auto-resubmit** (that duplicates the turn and can
+change project state). Trust Block B's `{submitted:true}` if you have it; otherwise confirm
+the run really didn't start (glance at the transcript, or the surrounding app reads the DB)
+**before** re-running Block B. `sawStop` is a backstop signal, not a resubmit trigger.
 
 A short run settles in one call; a long run (minutes) takes several — that's expected and
 cheap, and far fewer turns than checking every few seconds. `artifactsSeen` reports the

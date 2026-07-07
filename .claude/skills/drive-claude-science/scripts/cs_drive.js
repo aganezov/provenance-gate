@@ -108,7 +108,7 @@ await (async () => {
  *           (no selector needed), then click "Send".
  * ------------------------------------------------------------------------- */
 await (async () => {
-  const TEXT = "__PROMPT__";
+  const TEXT = __PROMPT_JSON__; // caller substitutes a JSON string literal: JSON.stringify(prompt)
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // BFS across the light DOM AND every shadow root (superset: works whether the
@@ -160,23 +160,13 @@ await (async () => {
   } else {
     // contenteditable: selectAll first so insertText REPLACES any existing draft
     // instead of appending at the cursor. execCommand insertText is verified to
-    // register in CS's editor; fall back to a synthetic beforeinput if a build
-    // stops honoring it.
+    // register in CS's editor. If a future build stops honoring it, `inserted` stays
+    // false and the caller recovers via the coordinate + JS-insert fallback (see the
+    // return-value guide) — a synthetic `beforeinput` does NOT perform the browser's
+    // trusted insertion, so it is not a real fallback and we don't attempt it.
     document.execCommand("selectAll", false, null);
     document.execCommand("insertText", false, TEXT);
     inserted = (el.textContent || "").includes(TEXT);
-    if (!inserted) {
-      document.execCommand("selectAll", false, null);
-      el.dispatchEvent(
-        new InputEvent("beforeinput", {
-          bubbles: true,
-          cancelable: true,
-          inputType: "insertText",
-          data: TEXT,
-        })
-      );
-      inserted = (el.textContent || "").includes(TEXT);
-    }
   }
   await sleep(120); // let the Send button appear now that there's text
 
@@ -191,16 +181,21 @@ await (async () => {
         (b) => /send|submit/i.test(label(b)) && !/more/i.test(label(b)) && !b.disabled
       );
     if (send) {
+      const frameBefore = (location.href.match(/frames\/([\w-]+)/) || [])[1] || null;
       send.click();
       sentVia = "send-button";
       await sleep(500);
-      // run started == a Stop button exists OR the URL advanced to a frame
+      // A run started == a Stop button exists, OR the frame id CHANGED (a new frame
+      // was minted). Mere presence of "/frames/" is NOT enough: in the multi-turn flow
+      // the URL already holds the previous frame, so a failed follow-up submit would
+      // otherwise read as success.
+      const frameAfter = (location.href.match(/frames\/([\w-]+)/) || [])[1] || null;
       submitted =
         [...document.querySelectorAll("button")].some(
           (b) =>
             /^stop$/i.test((b.textContent || "").trim()) ||
             /stop/i.test(b.getAttribute("aria-label") || "")
-        ) || location.href.includes("/frames/");
+        ) || (frameAfter !== null && frameAfter !== frameBefore);
     }
   }
 
@@ -342,12 +337,17 @@ await (async () => {
     return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
   };
   const editors = deepAll('[contenteditable="true"], textarea, [role="textbox"]')
-    .map((e) => ({
-      tag: e.tagName,
-      role: e.getAttribute("role"),
-      inShadow: e.getRootNode() !== document,
-      box: box(e),
-    }))
+    .map((e) => {
+      const b = box(e);
+      return {
+        tag: e.tagName,
+        role: e.getAttribute("role"),
+        inShadow: e.getRootNode() !== document,
+        box: b,
+        // the coordinate-click recovery path needs a point to click, not just a box
+        center: { x: b.x + Math.round(b.w / 2), y: b.y + Math.round(b.h / 2) },
+      };
+    })
     .filter((e) => e.box.w > 0);
   const actionButtons = [...document.querySelectorAll("button")]
     .map((b) => ({
