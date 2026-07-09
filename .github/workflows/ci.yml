@@ -1,0 +1,41 @@
+name: CI
+
+# Lean gate: uv sync (locked) -> ruff -> pytest. Correctness lives in unit/integration
+# tests; demos are a discipline, not a CI gate. Kept deliberately small.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up uv (+ Python 3.13)
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Install (exact versions, from uv.lock)
+        # --locked fails if uv.lock is out of sync with pyproject.toml, so the
+        # committed lock is verified on every run.
+        run: uv sync --locked
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Tests
+        run: uv run pytest

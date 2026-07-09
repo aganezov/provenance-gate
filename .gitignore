@@ -6,13 +6,28 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+.pytest_cache/
+.ruff_cache/
 
 # Claude Code (local, per-user — shared settings.json is tracked)
 .claude/settings.local.json
 
 # Runtime / scratch
 *.db
+# gate per-project state dir (sidecars + append-only logs) — set PG_STATE_DIR to relocate
+.pg/
 .playwright-mcp/
+
+# Claude Design pipeline — the mock AND its fixtures are disposable/derived: regenerated from CS by
+# design/graph_fixtures.py + design/build_mock.py. The pipeline scripts + brief stay tracked; not the data.
+ui/cockpit.mock.html
+design/graph_fixtures.json
+design/cs-shots/
+# raw fetched libs — staging for design/vendor_libs.py; the served copy is inlined into ui/cockpit.html
+ui/vendor/
+
+# Cross-session idea scratch — persistent notes/ideas we collect (incl. from other sessions); not tracked
+ideas/
 
 # OS
 .DS_Store

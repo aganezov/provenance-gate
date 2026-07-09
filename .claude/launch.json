@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "cockpit",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "python", "-m", "provenance_gate.server"],
+      "port": 8799
+    }
+  ]
+}
