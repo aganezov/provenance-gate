@@ -31,6 +31,7 @@ class ArtifactRef:
     storage_path: str
     parent_version_id: str | None = None  # revision link; keeps "revision != conflict" recoverable
     kind: str = "artifact"  # wire discriminator seam (future: "linked_value")
+    is_latest: bool = True  # current version of its artifact? drives the stale/mixed-version audit
 
 
 @dataclass(frozen=True, slots=True)

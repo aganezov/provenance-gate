@@ -21,7 +21,20 @@ from collections import defaultdict
 from .model import ArtifactRef, Edge, Frame, Graph, Node
 
 
-def _ref(v: dict) -> ArtifactRef:
+def _latest_by_artifact(versions: dict[str, dict]) -> dict[str, str]:
+    """Per artifact_id, the version id with the highest ``version_number``. CS bumps it each re-run,
+    so the max is the current version. (Adapters may later inject CS's authoritative
+    ``artifacts.latest_version_id``; the audit only needs "which version is current".)"""
+    latest: dict[str, str] = {}
+    best: dict[str, int] = {}
+    for v in versions.values():
+        aid, vn = v["artifact_id"], v["version_number"] or 0
+        if aid not in best or vn > best[aid]:
+            best[aid], latest[aid] = vn, v["id"]
+    return latest
+
+
+def _ref(v: dict, is_latest: bool) -> ArtifactRef:
     return ArtifactRef(
         artifact_version_id=v["id"],
         artifact_id=v["artifact_id"],
@@ -30,6 +43,7 @@ def _ref(v: dict) -> ArtifactRef:
         checksum=v["checksum"],
         storage_path=v["storage_path"],
         parent_version_id=v["parent_version_id"],
+        is_latest=is_latest,
     )
 
 
@@ -43,6 +57,7 @@ def _build_nodes(
     versions: dict[str, dict],
     cells: dict[str, dict],
     deps: list[dict],
+    latest: dict[str, str],
 ) -> list[Node]:
     """Group each version under its producing node, then build source + computation Nodes."""
     outputs_by_node: dict[str, list[dict]] = defaultdict(list)
@@ -54,9 +69,12 @@ def _build_nodes(
         if cv is not None:
             inputs_by_node[_producer_id(cv)].add(d["input_v"])
 
+    def ref(v: dict) -> ArtifactRef:  # is this ref its artifact's current version?
+        return _ref(v, latest.get(v["artifact_id"]) == v["id"])
+
     nodes: list[Node] = []
     for nid, out_versions in outputs_by_node.items():
-        out_surface = tuple(_ref(v) for v in sorted(out_versions, key=lambda r: r["id"]))
+        out_surface = tuple(ref(v) for v in sorted(out_versions, key=lambda r: r["id"]))
         if nid.startswith("source:"):
             nodes.append(
                 Node(
@@ -74,7 +92,7 @@ def _build_nodes(
         label = f"cell {cell['cell_index']}" if cell and cell["cell_index"] is not None else nid
         # filter to known version ids BEFORE sorting (a NULL input_v would break sorted())
         ivs = sorted(iv for iv in inputs_by_node.get(nid, ()) if iv in versions)
-        in_refs = tuple(_ref(versions[iv]) for iv in ivs)
+        in_refs = tuple(ref(versions[iv]) for iv in ivs)
         nodes.append(
             Node(
                 id=nid,
@@ -153,7 +171,8 @@ def derive_graph(
     """Neutral records → the immutable Graph. Pure and deterministic given ``built_at``."""
     if not versions:
         return empty_graph(project_id, built_at)
-    nodes = sorted(_build_nodes(project_id, versions, cells, deps), key=lambda n: n.id)
+    latest = _latest_by_artifact(versions)
+    nodes = sorted(_build_nodes(project_id, versions, cells, deps, latest), key=lambda n: n.id)
     keep = {n.cs_frame_id for n in nodes if n.cs_frame_id}
     frames = _build_frames(frames_raw, keep)
     edges = tuple(sorted(_build_edges(deps, versions), key=lambda e: e.id))

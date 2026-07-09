@@ -55,3 +55,21 @@ def test_derive_drops_unreferenced_frames():
 def test_derive_empty_when_no_versions():
     g = derive.derive_graph("proj_empty", {}, [], {}, [], built_at=5.0)
     assert g.nodes == () and g.edges == () and g.frames == () and g.built_at == 5.0
+
+
+def test_derive_flags_latest_version():
+    # two versions of the same artifact (a_x): v1 is stale, v2 is current
+    versions = {
+        "vx1": {"id": "vx1", "artifact_id": "a_x", "version_number": 1, "checksum": "1",
+                "storage_path": "p/x1", "parent_version_id": None,
+                "producing_cell_id": "c1", "frame_id": None, "filename": "x.csv"},
+        "vx2": {"id": "vx2", "artifact_id": "a_x", "version_number": 2, "checksum": "2",
+                "storage_path": "p/x2", "parent_version_id": "vx1",
+                "producing_cell_id": "c2", "frame_id": None, "filename": "x.csv"},
+    }
+    cells = {"c1": {"id": "c1", "frame_id": None, "cell_index": 1, "source": "s1"},
+             "c2": {"id": "c2", "frame_id": None, "cell_index": 2, "source": "s2"}}
+    g = derive.derive_graph("proj_x", versions, [], cells, [], built_at=1.0)
+    is_latest = {a.artifact_version_id: a.is_latest for n in g.nodes for a in n.output_surface}
+    assert is_latest == {"vx1": False, "vx2": True}  # highest version_number is the current one
+
