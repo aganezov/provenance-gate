@@ -16,6 +16,7 @@ import json
 import pathlib
 
 from provenance_gate.adapters.external import server, substrate
+from provenance_gate.core import audit
 
 OUT = pathlib.Path(__file__).resolve().parent / "graph_fixtures.json"
 # a hand-built showcase project (frames + fan-out/in + a diamond) to always bake in, regardless of size
@@ -54,7 +55,13 @@ def main() -> None:
         if stale_ranked and stale_ranked[0][0] > 0:
             picks.setdefault(stale_ranked[0][1], "versions")
 
-        graphs = {pid: dataclasses.asdict(graphs_all[pid]) for pid in picks}
+        graphs = {}  # /api-shaped, incl. the computed per-node verdict (mirror the server)
+        for pid in picks:
+            d = dataclasses.asdict(graphs_all[pid])
+            verdicts = audit.audit_graph(graphs_all[pid])
+            for nd in d["nodes"]:
+                nd["verdict"] = dataclasses.asdict(verdicts[nd["id"]])
+            graphs[pid] = d
         # surface the picked (interesting) projects first in the dropdown
         picked_first = [p for p in projects if p["id"] in picks] + [p for p in projects if p["id"] not in picks]
         OUT.write_text(json.dumps({"projects": picked_first, "graphs": graphs}, indent=1))

@@ -211,6 +211,19 @@ html[data-theme="dark"] .frame{ background:color-mix(in oklab, var(--ink) 4%, tr
   text-transform:uppercase; color:var(--ink-3); margin-bottom:.34rem; }
 #frame-pop .fp-text{ font-family:var(--mono); font-size:12px; line-height:1.55; color:var(--ink); text-wrap:pretty; }
 
+/* edge reader popover: the artifact version(s) flowing on a clicked edge (press-and-hold). */
+#edge-pop{ position:fixed; z-index:60; max-width:320px; display:none;
+  background:var(--surface); border:1px solid var(--border-strong); border-radius:10px;
+  box-shadow:var(--shadow-lift); padding:.55rem .62rem; }
+#edge-pop .ep-kick{ display:block; font-family:var(--mono); font-size:9px; letter-spacing:.16em;
+  text-transform:uppercase; color:var(--ink-3); margin-bottom:.42rem; }
+#edge-pop .ep-row{ display:flex; align-items:baseline; gap:.4rem; font-family:var(--mono); font-size:11.5px; line-height:1.5; }
+#edge-pop .ep-row + .ep-row{ margin-top:.24rem; }
+#edge-pop .ep-file{ color:var(--ink); font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+#edge-pop .ep-v{ flex:0 0 auto; color:var(--ink-2); }
+#edge-pop .ep-v.stale{ color:var(--fail); background:color-mix(in oklab, var(--fail) 15%, transparent); border-radius:4px; padding:.02rem .32rem; }
+#edge-pop .ep-ref{ flex:0 0 auto; margin-left:auto; color:var(--ink-3); }
+
 /* inspector — frame mode: back link + frame glyph + cell list */
 .insp-back{ display:inline-flex; align-items:center; gap:.3rem; cursor:pointer; margin:.55rem 0 -.1rem;
   font-family:var(--mono); font-size:.64rem; letter-spacing:.06em; color:var(--ink-2); }
@@ -223,6 +236,21 @@ html[data-theme="dark"] .frame{ background:color-mix(in oklab, var(--ink) 4%, tr
   background:var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:.44rem .55rem; }
 .cellrow:hover{ border-color:var(--border-strong); background:var(--panel); }
 .cellrow.active{ border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent-soft); }
+/* cell-list verdict rail — mirrors the node-card rail (§3.2) so the frame view scans like
+   the DAG: clean = no rail, stale = amber, mix = red. A vertical stripe on the row's left. */
+.cellrow{ position:relative; overflow:hidden; }
+.cr-rail{ position:absolute; left:0; top:0; bottom:0; width:3px; background:transparent; }
+.cellrow.v-stale .cr-rail{ background:var(--warn); }
+.cellrow.v-mix   .cr-rail{ background:var(--fail); }
+.cellrow.v-stale{ border-color:color-mix(in oklab, var(--warn) 38%, var(--border)); }
+.cellrow.v-mix{ border-color:color-mix(in oklab, var(--fail) 38%, var(--border)); }
+/* cell sort control (frame mode) */
+.cell-sort{ display:flex; align-items:center; gap:.5rem; margin:.1rem 0 .55rem; }
+.cell-sort .cs-lbl{ font-family:var(--mono); font-size:.56rem; letter-spacing:.12em; text-transform:uppercase; color:var(--ink-3); }
+.cell-sort .seg{ display:flex; gap:2px; margin-left:auto; background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:2px; }
+.cs-opt{ cursor:pointer; border:none; background:transparent; font-family:var(--mono); font-size:.6rem; letter-spacing:.03em; color:var(--ink-2); border-radius:4px; padding:.16rem .44rem; }
+.cs-opt:hover{ color:var(--ink); }
+.cs-opt.active{ background:var(--surface); color:var(--ink); box-shadow:var(--shadow); }
 .cellrow .cr-g{ flex:0 0 auto; }
 .cellrow .cr-main{ display:flex; flex-direction:column; gap:.06rem; min-width:0; flex:1 1 auto; }
 .cellrow .cr-label{ font-size:.76rem; font-weight:600; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -248,6 +276,17 @@ html[data-theme="dark"] .frame{ background:color-mix(in oklab, var(--ink) 4%, tr
 .node.lit .ncard{ border-color:var(--border-strong); }
 .node.selected .ncard{ border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-soft), var(--shadow-lift); }
 .node.selected .rail{ background:var(--accent); }
+/* verdict rail — lit per node.verdict.level (§3.2). clean stays the quiet neutral default
+   (NOT a positive claim); stale_input = amber caution, version_mix = red inconsistency.
+   Green stays RESERVED for a future attested state. Colored in place — no relayout. These
+   rules follow .node.selected .rail so a real verdict outranks the selection tint (selection
+   is still read from the card border/shadow); a CLEAN selected node keeps the accent rail. */
+.node.v-stale .rail{ background:var(--warn); }
+.node.v-mix   .rail{ background:var(--fail); }
+/* a faint status wash on the card edge so amber/red are scannable across the DAG at a glance,
+   without moving anything (border-color + inset ring only). */
+.node.v-stale .ncard{ border-color:color-mix(in oklab, var(--warn) 42%, var(--border)); }
+.node.v-mix   .ncard{ border-color:color-mix(in oklab, var(--fail) 42%, var(--border)); }
 
 .nhead{ display:flex; align-items:center; gap:.4rem; }
 .glyph{ width:10px; height:10px; flex:0 0 auto; }
@@ -295,6 +334,9 @@ html[data-theme="dark"] .frame{ background:color-mix(in oklab, var(--ink) 4%, tr
 .hud .autotag{ font-family:var(--mono); font-size:.5rem; letter-spacing:.1em; font-weight:600; color:var(--ink-3);
   border:1px solid var(--border); border-radius:4px; padding:.02rem .24rem; margin-left:.05rem; }
 .hud button.on .autotag{ color:var(--accent-ink); border-color:var(--accent); background:var(--accent-soft); }
+#btn-isolate.on{ color:var(--accent-ink); background:var(--accent-soft); }
+#btn-isolate:disabled{ opacity:.38; cursor:default; }
+#btn-isolate:disabled:hover{ background:transparent; color:var(--ink-3); }
 
 /* empty state */
 .empty{ position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.5rem;
@@ -377,6 +419,53 @@ html[data-theme="dark"] .frame{ background:color-mix(in oklab, var(--ink) 4%, tr
 .empty-surface{ font-family:var(--mono); font-size:.68rem; color:var(--ink-3); font-style:italic; padding:.1rem 0 .5rem; }
 .code{ background:var(--code-bg); border:1px solid var(--border); border-radius:9px; padding:.6rem .7rem; margin:0;
   font-size:.72rem; line-height:1.55; color:var(--mono-ink); overflow-x:auto; white-space:pre; }
+
+/* verdict callout — the inspector EXPLAINS a non-clean node.verdict (§3.2, P2). Amber =
+   stale input (built on a superseded version); red = version mix (lineage reconverges on
+   two versions of one artifact). Clean shows nothing — no positive claim is made. Reads the
+   node's own verdict.stale[] / verdict.mixed[] VersionIssues — no new endpoint. */
+.verdict{ margin:.55rem 0 .3rem; border-radius:9px; border:1px solid var(--border); padding:.55rem .62rem .6rem; }
+.verdict.v-stale{ background:var(--warn-soft); border-color:color-mix(in oklab, var(--warn) 42%, transparent); }
+.verdict.v-mix{ background:var(--fail-soft); border-color:color-mix(in oklab, var(--fail) 42%, transparent); }
+.verdict-h{ display:flex; align-items:center; gap:.45rem; font-family:var(--mono); font-size:.6rem;
+  letter-spacing:.13em; text-transform:uppercase; font-weight:600; }
+.verdict.v-stale .verdict-h{ color:var(--warn); }
+.verdict.v-mix .verdict-h{ color:var(--fail); }
+.verdict-dot{ width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
+.verdict.v-stale .verdict-dot{ background:var(--warn); }
+.verdict.v-mix .verdict-dot{ background:var(--fail); }
+.verdict-note{ font-size:.72rem; color:var(--ink-2); margin-top:.34rem; line-height:1.42; text-wrap:pretty; }
+.verdict-lines{ display:flex; flex-direction:column; gap:.28rem; margin-top:.5rem; }
+.verdict-line{ display:flex; flex-wrap:wrap; align-items:baseline; gap:.06rem .42rem;
+  font-family:var(--mono); font-size:.68rem; line-height:1.35; }
+.verdict-line .vf{ color:var(--ink); font-weight:600; word-break:break-all; }
+.verdict-line .vmeta{ color:var(--ink-2); }
+.verdict-line .vcur{ color:var(--ink-2); }
+/* a version number resolves to the cell that produced it — clickable, navigates there. */
+a.vgoto{ color:var(--accent-ink); cursor:pointer; text-decoration:none;
+  border-bottom:1px dotted color-mix(in oklab, var(--accent-ink) 55%, transparent); }
+a.vgoto:hover{ text-decoration:none; border-bottom-style:solid; }
+/* conflict-path trace — click a flagged-input row to light only producer(s)→this-cell paths */
+.verdict-line.traceable{ cursor:pointer; border-radius:6px; padding:.16rem .32rem; margin:0 -.32rem; transition:background .12s; }
+.verdict-line.traceable:hover{ background:color-mix(in oklab, var(--ink) 6%, transparent); }
+.verdict-line .tr-ico{ margin-left:auto; flex:0 0 auto; display:inline-flex; align-items:center; justify-content:center;
+  width:19px; height:19px; border-radius:5px; color:var(--ink-3); border:1px solid transparent;
+  transition:color .12s, background .12s, border-color .12s; }
+.verdict-line .tr-ico svg{ width:12px; height:12px; }
+.verdict-line.traceable:hover .tr-ico{ color:var(--ink); background:color-mix(in oklab, var(--ink) 7%, transparent); }
+.verdict-line.traced{ background:var(--accent-soft); }
+.verdict-line.traced .tr-ico{ color:var(--accent-ink); border-color:var(--accent); background:var(--surface); }
+.verdict-trace{ display:flex; align-items:center; gap:.4rem; margin-top:.5rem; flex-wrap:wrap; }
+.tr-clear{ cursor:pointer; font-family:var(--mono); font-size:.56rem; letter-spacing:.09em; text-transform:uppercase;
+  color:var(--ink-2); background:transparent; border:1px solid var(--border-strong); border-radius:5px; padding:.22rem .5rem; }
+.tr-clear:hover{ color:var(--ink); border-color:var(--ink-2); }
+.tr-clear:disabled{ opacity:.4; cursor:default; }
+.tr-clear:disabled:hover{ color:var(--ink-2); border-color:var(--border-strong); }
+.tr-all{ cursor:pointer; font-family:var(--mono); font-size:.56rem; letter-spacing:.09em; text-transform:uppercase;
+  color:var(--ink-2); background:var(--surface); border:1px solid var(--border-strong); border-radius:5px; padding:.22rem .5rem; }
+.tr-all:hover{ color:var(--ink); border-color:var(--ink-2); }
+.tr-all.on{ color:var(--accent-ink); border-color:var(--accent); background:var(--accent-soft); }
+.verdict-hint{ font-family:var(--mono); font-size:.56rem; letter-spacing:.02em; color:var(--ink-3); margin-top:.5rem; line-height:1.4; text-wrap:pretty; }
 
 /* scrollbars */
 .insp-body::-webkit-scrollbar,.code::-webkit-scrollbar{ width:9px; height:9px; }
@@ -4692,6 +4781,10 @@ module.exports = __WEBPACK_EXTERNAL_MODULE__4__;
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v4h4"/></svg>
         Relayout
       </button>
+      <button id="btn-isolate" title="Select or trace nodes first, then isolate" disabled>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/></svg>
+        <span id="isolate-lbl">Isolate</span>
+      </button>
       <div class="divider"></div>
       <button id="zoom-out" title="Zoom out">–</button>
       <span class="zoom" id="zoom-pct">100%</span>
@@ -4834,6 +4927,10 @@ const state = {
   inspAnim: false,             // inspector is mid open/close transition — ignore resize refit
   artOpen: new Set(),          // expanded artifact rows (persist across polls)
   secOpen: { identity: true, inputs: true, outputs: true, code: true },
+  frameSort: 'index',          // frame cell-list order: 'index' (as-is) | 'verdict' (red→amber→neutral)
+  trace: null,                 // active conflict-path trace: { node, key: artifact_id | 'ALL' } | null
+  isolated: false,             // isolate mode: only the highlighted subset is shown (rest hidden)
+  avMap: {},                   // artifact_version_id -> { file, ver, latest, lv } (for edge popovers)
 };
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -4887,8 +4984,12 @@ function initCy(){
   });
 
   cy.on('pan zoom', syncOverlay);
-  cy.on('pan zoom', () => hideFramePop());
+  cy.on('pan zoom', () => { hideFramePop(); hideEdgePop(); });
   cy.on('drag free', 'node', syncOverlay);   // keep cards glued while a node is hand-dragged
+
+  // press-and-hold an edge → show which artifact version(s) flow on it; release hides it
+  cy.on('tapstart', 'edge', (e) => showEdgePop(e.target, e.originalEvent));
+  cy.on('tapend', () => hideEdgePop());
 
   // tap: single = select + open panel (retain camera); double = also zoom to node
   let lastId = null, lastAt = 0;
@@ -4922,6 +5023,9 @@ function nodeCard(n){
   const isSrc = n.kind === 'source';
   const outs = n.output_surface || [], ins = n.input_surface || [];
   const primary = outs[0];
+  // verdict.level lights the reserved rail slot. sources are always clean.
+  const level = (n.verdict && n.verdict.level) || 'clean';
+  const vClass = level === 'version_mix' ? ' v-mix' : level === 'stale_input' ? ' v-stale' : '';
   let main = '';
   if (isSrc){
     // a source IS its artifact — show the filename as identity text, not an output chip
@@ -4940,7 +5044,7 @@ function nodeCard(n){
   const corner = isSrc
     ? (ins.length ? '' : 'root')
     : (n.cell_index != null ? `cell ${escHtml(n.cell_index)}` : escHtml(n.label || ''));
-  return `<div class="node ${isSrc ? 'k-source' : 'k-comp'}" data-id="${escHtml(n.id)}" style="width:${V.W}px;height:${V.H}px">
+  return `<div class="node ${isSrc ? 'k-source' : 'k-comp'}${vClass}" data-id="${escHtml(n.id)}" style="width:${V.W}px;height:${V.H}px">
     <div class="ncard">
       <span class="rail"></span>
       <div class="nhead">
@@ -4961,6 +5065,7 @@ function syncOverlay(){
     const n = ns[i];
     const card = state.cards[n.id()];
     if (!card) continue;
+    card.style.display = n.visible() ? '' : 'none';   // honor isolate (hidden cy nodes → hidden cards)
     const p = n.renderedPosition();
     card.style.transform = `translate(${p.x}px,${p.y}px) translate(-50%,-50%) scale(${z})`;
   }
@@ -4972,6 +5077,7 @@ function syncOverlay(){
       const node = cy.$id(f.id); if (!node || node.empty()) continue;
       const bb = node.boundingBox({ includeLabels: false });
       const rbb = node.renderedBoundingBox({ includeLabels: false });
+      fe.style.display = node.visible() ? '' : 'none';
       fe.style.width = bb.w + 'px';
       fe.style.height = bb.h + 'px';
       fe.style.transform = `translate(${rbb.x1}px,${rbb.y1}px) scale(${z})`;
@@ -5010,6 +5116,12 @@ function renderGraph(g){
   });
 
   cy.batch(() => { cy.elements().remove(); cy.add(els); });
+  state.isolated = false;                 // a fresh graph starts fully shown
+  // index every artifact version (from node surfaces) so an edge's via_artifact_version_id resolves
+  state.avMap = {};
+  g.nodes.forEach(n => [...(n.input_surface || []), ...(n.output_surface || [])].forEach(a => {
+    state.avMap[a.artifact_version_id] = { file: a.filename, ver: a.version_number, latest: a.is_latest, lv: a.latest_version_number };
+  }));
 
   // overlay cards
   el.nodes.innerHTML = g.nodes.map(nodeCard).join('');
@@ -5032,12 +5144,14 @@ function renderGraph(g){
   attachLayoutStop(buildLayout()).run();
 }
 
-// build the auto-layout for the current graph (dagre when edged, preset grid otherwise)
+// build the auto-layout for the current graph (dagre when edged, preset grid otherwise).
+// Scoped to :visible elements so it RESPECTS isolate mode (hidden nodes stay put / out of it).
 function buildLayout(){
   const g = state.graph;
-  if (cy.edges().length){
+  const vis = cy.elements(':visible');
+  if (cy.edges(':visible').length){
     return cy.layout({ name: 'dagre', rankDir: 'LR', ranker: 'network-simplex',
-                       nodeSep: 26, rankSep: 92, edgeSep: 12, animate: false });
+                       nodeSep: 26, rankSep: 92, edgeSep: 12, animate: false, eles: vis });
   }
   const usedFrames = new Set(state.frames.map(f => f.id));
   const groups = new Map();                 // frame id (or '__none') -> [node ids], framed first
@@ -5062,15 +5176,18 @@ function buildLayout(){
     curX += gc * CW + GAP;
     if (++col >= perRow){ col = 0; curX = 0; curY += rowH + GAP; rowH = 0; }
   });
-  return cy.layout({ name: 'preset', positions: (n) => pos[n.id()], fit: false, animate: false });
+  return cy.layout({ name: 'preset', positions: (n) => pos[n.id()], fit: false, animate: false, eles: vis });
 }
 function attachLayoutStop(layout){
   layout.one('layoutstop', () => {
     syncOverlay();
     if (state.autofit || state.pendingFit){ fitNow(false); state.pendingFit = false; }
-    if (state.selected && state.cards[state.selected]){ markSelected(state.selected); setLineage(cy.$id(state.selected)); }
+    if (state.selected && state.cards[state.selected]){ markSelected(state.selected);
+      if (state.trace && state.trace.node === state.selected && state.trace.keys.size) traceConflict(state.trace.node, state.trace.keys);
+      else setLineage(cy.$id(state.selected)); }
     else if (state.selectedFrame && cy.$id(state.selectedFrame).nonempty()){ selectFrame(state.selectedFrame, true); }
     else if (state.selectedFrame){ state.selectedFrame = null; }
+    syncIsolateBtn();
   });
   return layout;
 }
@@ -5082,7 +5199,53 @@ function relayout(){
   attachLayoutStop(buildLayout()).run();
 }
 
-/* ---------------- camera ---------------- */
+/* ---------------- isolate (show only the highlighted subset) ---------------- */
+// true when SOME node is dimmed — i.e. a selection or trace is narrowing the view.
+function hasHighlight(){ return !!cy && cy.nodes().not(':parent').some(n => n.hasClass('faded')); }
+// Manual toggle (HUD, next to Relayout). ON: hide every node NOT currently highlighted
+// (the faded ones), drop their edges + now-empty frames, then relayout + fit the remaining
+// subgraph. OFF: show everything again and relayout + fit. buildLayout is :visible-scoped,
+// so both the isolate relayout AND the Relayout button respect what's shown/hidden.
+function setIsolate(on){
+  if (!cy || !cy.nodes().length) return;
+  if (on){
+    const cells = cy.nodes().not(':parent');
+    const keep = cells.filter(n => !n.hasClass('faded'));
+    if (keep.empty() || keep.length === cells.length) return;   // nothing to isolate
+    const keepIds = new Set(keep.map(n => n.id()));
+    cy.batch(() => {
+      cy.elements().show();
+      const drop = cells.difference(keep);
+      drop.hide();
+      drop.connectedEdges().hide();
+      cy.nodes(':parent').forEach(p => { if (!p.children().some(c => keepIds.has(c.id()))) p.hide(); });
+    });
+    state.isolated = true;
+    PG.action('isolate', { kept: keep.length });
+  } else {
+    cy.batch(() => cy.elements().show());
+    state.isolated = false;
+    PG.action('isolate_clear', null);
+  }
+  syncIsolateBtn();
+  state.pendingFit = true;
+  attachLayoutStop(buildLayout()).run();
+}
+function syncIsolateBtn(){
+  const b = document.getElementById('btn-isolate'); if (!b) return;
+  const lbl = document.getElementById('isolate-lbl');
+  b.classList.toggle('on', state.isolated);
+  if (state.isolated){
+    lbl.textContent = 'Show all'; b.disabled = false;
+    b.title = 'Show every node again (relayout & fit)';
+  } else {
+    lbl.textContent = 'Isolate';
+    const can = hasHighlight();
+    b.disabled = !can;
+    b.title = can ? 'Isolate the highlighted nodes — hide the rest, relayout & fit'
+                  : 'Select or trace nodes first, then isolate';
+  }
+}
 // When a double-click also opens the inspector for the first time, the panel is
 // mid-transition (CSS width animation) and the graph viewport hasn't shrunk yet — so
 // a fit/center computed now lands shifted. Defer the zoom until the panel settles.
@@ -5141,6 +5304,7 @@ function selectNode(id, silent){
   const firstOpen = !state.inspOpen;
   state.selected = id;
   markSelected(id);
+  state.trace = null;                     // fresh node context — drop any active conflict trace
   setLineage(cy.$id(id));                 // highlight lineage on selection; persists until change
   fillInspector(n);
   state.inspOpen = true;
@@ -5182,6 +5346,7 @@ function selectFrame(fid, silent){
 function deselect(){
   if (!state.selected && !state.inspOpen && !state.selectedFrame) return;
   clearLineage();
+  state.trace = null;
   hideFramePop();
   state.selected = null;
   state.selectedFrame = null;
@@ -5265,6 +5430,78 @@ function artRow(a){
   </div>`;
 }
 
+// resolve an artifact version (artifact_id + version_number) to the cell that PRODUCED it,
+// by matching an output_surface ref. Every version in the fixtures resolves uniquely; returns
+// null if the producer isn't in this graph (then the token renders as plain, non-clickable text).
+function findProducer(artifactId, ver){
+  const g = state.graph; if (!g) return null;
+  for (const n of g.nodes){
+    for (const a of (n.output_surface || [])){
+      if (a.artifact_id === artifactId && a.version_number === ver) return n.id;
+    }
+  }
+  return null;
+}
+
+// EXPLAIN a non-clean verdict: read the node's own verdict.stale[] / verdict.mixed[]
+// VersionIssues (§3.2, Appendix A). Clean returns '' — no callout, no positive claim.
+function verdictBlock(n){
+  const v = n.verdict;
+  if (!v || v.level === 'clean') return '';
+  const isMix = v.level === 'version_mix';
+  const cls   = isMix ? 'v-mix' : 'v-stale';
+  const title = isMix ? 'Version mix' : 'Stale input';
+  const note  = isMix
+    ? 'This node’s lineage reconverges on two versions of one artifact — internally inconsistent.'
+    : 'This node consumed a superseded version of an artifact.';
+  // each version renders as a link to its producing cell when resolvable (plain text otherwise)
+  const verToken = (artifactId, ver) => {
+    const pid = findProducer(artifactId, ver);
+    return pid
+      ? `<a class="vgoto" href="#" data-goto="${escHtml(pid)}" title="Go to the cell that produced v${escHtml(ver)}">v${escHtml(ver)}</a>`
+      : `v${escHtml(ver)}`;
+  };
+  // each flagged-input row toggles into the trace SET; multiple can be combined. A small route
+  // icon on the row shows its state ('traced' = currently in the set).
+  const activeKeys = (state.trace && state.trace.node === n.id) ? state.trace.keys : new Set();
+  const traceIco = `<span class="tr-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h10"/><path d="M11 8l4 4-4 4"/><circle cx="20" cy="12" r="1.9" fill="currentColor" stroke="none"/></svg></span>`;
+  const lineWrap = (i, inner) =>
+    `<div class="verdict-line traceable${activeKeys.has(i.artifact_id) ? ' traced' : ''}" data-trace="${escHtml(i.artifact_id)}" `
+    + `title="Trace this input's path(s) to this cell — click to add or remove; combine multiple">`
+    + inner + traceIco + `</div>`;
+  const staleLine = (i) => lineWrap(i,
+      `<span class="vf">${escHtml(i.artifact)}</span>`
+    + `<span class="vmeta">${(i.versions||[]).map(x => verToken(i.artifact_id, x)).join(', ')}</span>`
+    + `<span class="vcur">(current ${verToken(i.artifact_id, i.current)})</span>`);
+  const mixLine = (i) => {
+    const toks = (i.versions || []).map(x => verToken(i.artifact_id, x));
+    const joined = toks.length > 1 ? toks.slice(0, -1).join(', ') + ' and ' + toks[toks.length - 1] : (toks[0] || '');
+    return lineWrap(i,
+        `<span class="vf">${escHtml(i.artifact)}</span>`
+      + `<span class="vmeta">at ${joined}</span>`
+      + `<span class="vcur">(current ${verToken(i.artifact_id, i.current)})</span>`);
+  };
+  let lines = '';
+  (v.mixed || []).forEach(i => lines += mixLine(i));
+  (v.stale || []).forEach(i => lines += staleLine(i));
+  const total = (v.mixed || []).length + (v.stale || []).length;
+  const allKeys = [...(v.mixed || []), ...(v.stale || [])].map(i => i.artifact_id);
+  const allSel = allKeys.length > 0 && allKeys.every(k => activeKeys.has(k));
+  const allBtn = total > 1
+    ? `<button class="tr-all${allSel ? ' on' : ''}" data-trace="ALL">Trace all paths to here</button>`
+    : '';
+  const clrBtn = `<button class="tr-clear" data-trace-clear${activeKeys.size ? '' : ' disabled'}>Clear</button>`;
+  const controls = `<div class="verdict-trace">${allBtn}${clrBtn}</div>`;
+  const hint = `<div class="verdict-hint">Click ${total > 1 ? 'rows' : 'the row'} to trace ${total > 1 ? 'their paths' : 'its path'} from the producing cell${total > 1 ? 's' : ''} to this cell${total > 1 ? '; select several to combine' : ''}.</div>`;
+  return `<div class="verdict ${cls}">
+    <div class="verdict-h"><span class="verdict-dot"></span>${title}</div>
+    <div class="verdict-note">${escHtml(note)}</div>
+    <div class="verdict-lines">${lines}</div>
+    ${controls}
+    ${hint}
+  </div>`;
+}
+
 function fillInspector(n){
   const isSrc = n.kind === 'source';
   el.inspGlyph.className = 'glyph ' + (isSrc ? 'g-src' : 'g-comp');
@@ -5289,7 +5526,8 @@ function fillInspector(n){
   const inBody  = ins.length ? ins.map(artRow).join('') : `<div class="empty-surface">no inputs — provenance root</div>`;
   const outBody = outs.length ? outs.map(artRow).join('') : `<div class="empty-surface">no output artifacts</div>`;
 
-  let html = sec('identity', 'Identity', null, idBody)
+  let html = verdictBlock(n)
+           + sec('identity', 'Identity', null, idBody)
            + sec('inputs', 'Inputs consumed', ins.length, inBody)
            + sec('outputs', 'Outputs produced', outs.length, outBody);
   if (n.code)       html += sec('code', 'Producing code', null, `<pre class="code mono">${escHtml(n.code)}</pre>`);
@@ -5302,9 +5540,19 @@ function fillInspector(n){
 
 // FRAME MODE: the frame's identity + a navigable list of its cells (by cell_index).
 function fillFrameInspector(frame){
+  const rank = { version_mix: 0, stale_input: 1, clean: 2 };   // red → amber → neutral
+  const lvlOf = (c) => (c.verdict && c.verdict.level) || 'clean';
+  const sortMode = state.frameSort || 'index';
   const cells = (state.graph && state.graph.nodes || [])
     .filter(n => n.cs_frame_id === frame.id)
-    .sort((a, b) => (a.cell_index ?? 1e9) - (b.cell_index ?? 1e9));
+    .slice()
+    .sort((a, b) => {
+      if (sortMode === 'verdict'){
+        const d = (rank[lvlOf(a)] ?? 3) - (rank[lvlOf(b)] ?? 3);
+        if (d) return d;                       // severity first; cell order breaks ties
+      }
+      return (a.cell_index ?? 1e9) - (b.cell_index ?? 1e9);
+    });
 
   el.inspGlyph.className = 'glyph g-frame';
   el.inspKind.textContent = 'FRAME';
@@ -5320,7 +5568,10 @@ function fillFrameInspector(frame){
     const outs = c.output_surface || [];
     const label = isSrc ? (c.label || '(source)') : (c.cell_index != null ? `cell ${c.cell_index}` : 'cell');
     const sub = isSrc ? 'source file' : (outs[0] ? outs[0].filename : 'no output');
-    return `<button class="cellrow ${isSrc ? 'k-source' : ''} ${c.id === state.selected ? 'active' : ''}" data-cell="${escHtml(c.id)}">
+    const lvl = lvlOf(c);
+    const vCls = lvl === 'version_mix' ? ' v-mix' : lvl === 'stale_input' ? ' v-stale' : '';
+    return `<button class="cellrow ${isSrc ? 'k-source' : ''}${vCls} ${c.id === state.selected ? 'active' : ''}" data-cell="${escHtml(c.id)}">
+      <span class="cr-rail"></span>
       <span class="cr-g glyph ${isSrc ? 'g-src' : 'g-comp'}"></span>
       <span class="cr-main">
         <span class="cr-label">${escHtml(label)}</span>
@@ -5331,7 +5582,13 @@ function fillFrameInspector(frame){
     </button>`;
   }).join('');
 
-  const listBody = `<div class="cell-list">${cells.length ? list : `<div class="empty-surface">no cells in this frame</div>`}</div>`;
+  const sortCtl = cells.length
+    ? `<div class="cell-sort"><span class="cs-lbl">Sort</span><span class="seg">`
+      + `<button class="cs-opt ${sortMode === 'index' ? 'active' : ''}" data-sort="index">Cell order</button>`
+      + `<button class="cs-opt ${sortMode === 'verdict' ? 'active' : ''}" data-sort="verdict">Verdict</button>`
+      + `</span></div>`
+    : '';
+  const listBody = sortCtl + `<div class="cell-list">${cells.length ? list : `<div class="empty-surface">no cells in this frame</div>`}</div>`;
 
   el.inspBody.innerHTML = sec('identity', 'Frame', null, idBody)
                         + sec('cells', 'Cells', cells.length, listBody);
@@ -5341,6 +5598,27 @@ function fillFrameInspector(frame){
 
 /* delegated inspector interactions */
 el.inspBody.addEventListener('click', (e) => {
+  const gt = e.target.closest('[data-goto]');
+  if (gt){ e.preventDefault(); selectNode(gt.getAttribute('data-goto')); return; }   // verdict version → producing cell
+  const tclr = e.target.closest('[data-trace-clear]');
+  if (tclr){ e.preventDefault(); const id = state.selected; if (id) applyTrace(id, new Set()); return; }
+  const tr = e.target.closest('[data-trace]');
+  if (tr){ e.preventDefault();
+    const key = tr.getAttribute('data-trace');
+    const id = state.selected; if (!id) return;
+    const n = state.graph && state.graph.nodes.find(x => x.id === id); if (!n || !n.verdict) return;
+    const allKeys = [...(n.verdict.mixed || []), ...(n.verdict.stale || [])].map(i => i.artifact_id);
+    let keys = (state.trace && state.trace.node === id) ? new Set(state.trace.keys) : new Set();
+    if (key === 'ALL'){ keys = allKeys.every(k => keys.has(k)) ? new Set() : new Set(allKeys); }   // toggle all
+    else if (keys.has(key)) keys.delete(key); else keys.add(key);                                  // toggle one
+    applyTrace(id, keys);
+    return; }
+  const so = e.target.closest('[data-sort]');
+  if (so){ const m = so.getAttribute('data-sort');
+    if (m !== state.frameSort){ state.frameSort = m;
+      const f = state.frames && state.frames.find(x => x.id === state.selectedFrame);
+      if (f) fillFrameInspector(f); }
+    return; }
   const cr = e.target.closest('[data-cell]');
   if (cr){ selectNode(cr.getAttribute('data-cell')); return; }   // frame-mode cell → cell mode
   const st = e.target.closest('[data-sec-toggle]');
@@ -5361,6 +5639,37 @@ el.inspBody.addEventListener('click', (e) => {
 // clicking a copy button sits inside art-h; stop it from toggling — handled above via stopPropagation
 el.inspTitle.addEventListener('click', () => el.inspTitle.classList.toggle('expanded'));
 
+// hover a flagged-input row (or "trace all") → TEMPORARY conflict-path preview; leaving restores
+// the current highlight (a pinned trace if one is clicked, else the node's normal lineage).
+let hoverTrace = null;
+function restoreHighlight(){
+  if (!state.selected) return;
+  if (state.trace && state.trace.node === state.selected && state.trace.keys.size) traceConflict(state.trace.node, state.trace.keys);
+  else setLineage(cy.$id(state.selected));
+}
+el.inspBody.addEventListener('mouseover', (e) => {
+  const tr = e.target.closest('[data-trace]');
+  if (!tr || !state.selected) return;
+  const key = tr.getAttribute('data-trace');
+  if (key === hoverTrace) return;                 // already previewing this row
+  hoverTrace = key;
+  const id = state.selected;
+  const n = state.graph && state.graph.nodes.find(x => x.id === id); if (!n || !n.verdict) return;
+  const allKeys = [...(n.verdict.mixed || []), ...(n.verdict.stale || [])].map(i => i.artifact_id);
+  const pinned = (state.trace && state.trace.node === id) ? state.trace.keys : new Set();
+  const preview = new Set(pinned);               // preview = pinned set + the hovered row
+  if (key === 'ALL') allKeys.forEach(k => preview.add(k)); else preview.add(key);
+  traceConflict(id, preview);
+});
+el.inspBody.addEventListener('mouseout', (e) => {
+  const tr = e.target.closest('[data-trace]');
+  if (!tr) return;
+  const to = e.relatedTarget;
+  if (to && (tr.contains(to) || (to.closest && to.closest('[data-trace]')))) return;  // moving within/to another row
+  hoverTrace = null;
+  restoreHighlight();
+});
+
 /* ---------------- lineage hover ---------------- */
 /* ---------------- lineage highlight (shared by node + frame select) ---------------- */
 function highlightLineage(coll){
@@ -5376,11 +5685,60 @@ function highlightLineage(coll){
     state.cards[id].classList.toggle('faded', !on);
     state.cards[id].classList.toggle('lit', on);
   }
+  syncIsolateBtn();
 }
 function setLineage(node){ highlightLineage(node.predecessors().union(node.successors()).union(node)); }
 function clearLineage(){
   cy.batch(() => cy.elements().removeClass('faded lit'));
   for (const id in state.cards) state.cards[id].classList.remove('faded', 'lit');
+  syncIsolateBtn();
+}
+// TRACE conflict paths: light ONLY the nodes/edges on a path from each conflict-producing cell
+// to the current cell. For every flagged version (verdict.mixed[] + verdict.stale[]) resolve its
+// producer, then take descendants(producer) ∩ ancestors(current) — the exact reconvergence paths.
+function traceConflict(nodeId, keySet){
+  if (!cy) return;
+  const C = cy.$id(nodeId); if (C.empty()) return;
+  const n = state.graph && state.graph.nodes.find(x => x.id === nodeId);
+  if (!n || !n.verdict){ setLineage(C); return; }
+  const issues = [...(n.verdict.mixed || []), ...(n.verdict.stale || [])];
+  const sel = issues.filter(i => keySet.has(i.artifact_id));
+  let producers = cy.collection();
+  for (const i of sel){
+    for (const ver of (i.versions || [])){
+      const pid = findProducer(i.artifact_id, ver);
+      if (pid){ const p = cy.$id(pid); if (p.nonempty()) producers = producers.union(p); }
+    }
+  }
+  if (producers.empty()){ setLineage(C); return; }
+  const ancC = C.union(C.predecessors());
+  let pathset = C.union(producers);
+  producers.forEach(P => { pathset = pathset.union(P.union(P.successors()).intersection(ancC)); });
+  highlightLineage(pathset);
+}
+// apply a multi-select trace SET for a node; empty set restores the node's full lineage.
+function applyTrace(id, keys){
+  if (keys && keys.size){
+    state.trace = { node: id, keys };
+    traceConflict(id, keys);
+    PG.action('trace_conflict', { node: id, artifacts: [...keys] });
+  } else {
+    state.trace = null;
+    setLineage(cy.$id(id));
+  }
+  updateTraceActive();
+}
+function updateTraceActive(){
+  const keys = (state.trace && state.trace.node === state.selected) ? state.trace.keys : new Set();
+  const rows = [...el.inspBody.querySelectorAll('[data-trace]')];
+  const allKeys = rows.map(r => r.getAttribute('data-trace')).filter(k => k !== 'ALL');
+  rows.forEach(elm => {
+    const k = elm.getAttribute('data-trace');
+    if (k === 'ALL'){ elm.classList.toggle('on', allKeys.length > 0 && allKeys.every(x => keys.has(x))); }
+    else { elm.classList.toggle('traced', keys.has(k)); }
+  });
+  const clr = el.inspBody.querySelector('[data-trace-clear]');
+  if (clr) clr.disabled = keys.size === 0;
 }
 
 /* ---------------- frame chrome (title / border) interactions ---------------- */
@@ -5388,6 +5746,37 @@ function clearLineage(){
 const framePop = document.createElement('div');
 framePop.id = 'frame-pop';
 document.body.appendChild(framePop);
+
+// edge popover: lists every artifact version flowing producer→consumer on a clicked edge.
+// Aggregates ALL api edges for that node pair (parallel edges = several artifacts on one line).
+const edgePop = document.createElement('div');
+edgePop.id = 'edge-pop';
+document.body.appendChild(edgePop);
+function hideEdgePop(){ edgePop.style.display = 'none'; }
+function showEdgePop(edge, oe){
+  if (!state.graph) return;
+  const src = edge.source().id(), dst = edge.target().id();
+  const list = (state.graph.edges || []).filter(e => e.src_node_id === src && e.dst_node_id === dst);
+  if (!list.length) return;
+  const rows = list.map(e => {
+    const a = state.avMap[e.via_artifact_version_id];
+    const file = a ? a.file : (e.reference_name || 'artifact');
+    const stale = a && a.latest === false;
+    const cur = (stale && a.lv != null) ? ` (current v${escHtml(a.lv)})` : '';
+    const ver = a ? `v${escHtml(a.ver)}${cur}` : '';
+    const ref = (e.reference_name && a && e.reference_name !== a.file) ? `<span class="ep-ref">as ${escHtml(e.reference_name)}</span>` : '';
+    return `<div class="ep-row"><span class="ep-file" title="${escHtml(file)}">${escHtml(file)}</span>`
+         + (ver ? `<span class="ep-v${stale ? ' stale' : ''}">${ver}</span>` : '') + ref + `</div>`;
+  }).join('');
+  edgePop.innerHTML = `<span class="ep-kick">Flows on this edge${list.length > 1 ? ` · ${list.length}` : ''}</span>${rows}`;
+  edgePop.style.display = 'block';
+  edgePop.style.left = '0px'; edgePop.style.top = '0px';
+  const pw = edgePop.offsetWidth, ph = edgePop.offsetHeight;
+  const x = oe ? oe.clientX : window.innerWidth / 2, y = oe ? oe.clientY : window.innerHeight / 2;
+  edgePop.style.left = Math.max(10, Math.min(x + 12, window.innerWidth - pw - 10)) + 'px';
+  edgePop.style.top = (y + 14 + ph > window.innerHeight - 10 ? Math.max(10, y - ph - 12) : y + 14) + 'px';
+}
+window.addEventListener('pointerup', hideEdgePop);
 let framePopFor = null;
 function hideFramePop(){ framePop.style.display = 'none'; framePopFor = null; }
 function showFramePop(fid, headEl){
@@ -5443,6 +5832,7 @@ el.btnFit.addEventListener('dblclick', () => {        // double click: toggle st
   if (state.autofit) fitNow(true);
 });
 $('#btn-relayout').addEventListener('click', () => relayout());
+$('#btn-isolate').addEventListener('click', () => setIsolate(!state.isolated));
 $('#zoom-in').addEventListener('click', () => { setAutofit(false); cy.zoom({ level: Math.min(2.5, cy.zoom() * 1.2), renderedPosition: { x: el.cyBox.clientWidth / 2, y: el.cyBox.clientHeight / 2 } }); el.zoomPct.textContent = Math.round(cy.zoom() * 100) + '%'; });
 $('#zoom-out').addEventListener('click', () => { setAutofit(false); cy.zoom({ level: Math.max(0.05, cy.zoom() / 1.2), renderedPosition: { x: el.cyBox.clientWidth / 2, y: el.cyBox.clientHeight / 2 } }); el.zoomPct.textContent = Math.round(cy.zoom() * 100) + '%'; });
 cy_zoom_track();
