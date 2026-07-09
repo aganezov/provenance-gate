@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS edge(
     id TEXT PRIMARY KEY, cs_project_id TEXT, src_node_id TEXT, dst_node_id TEXT,
     via_artifact_version_id TEXT, reference_name TEXT);
 CREATE TABLE IF NOT EXISTS frame(
-    id TEXT, cs_project_id TEXT, label TEXT, parent_frame_id TEXT, kind TEXT);
+    id TEXT PRIMARY KEY, cs_project_id TEXT, label TEXT, parent_frame_id TEXT, kind TEXT);
 CREATE INDEX IF NOT EXISTS ix_node_project ON node(cs_project_id);
 CREATE INDEX IF NOT EXISTS ix_surface_node ON surface_item(node_id);
 CREATE INDEX IF NOT EXISTS ix_edge_project ON edge(cs_project_id);

@@ -45,3 +45,9 @@ def test_concurrent_appends_are_intact(tmp_path):
     lines = _lines(tmp_path / "proj_x" / "events.jsonl")
     assert len(lines) == 8 * 20  # no lost or torn writes under the lock
     assert all(isinstance(x, dict) for x in lines)
+
+
+def test_client_cannot_forge_server_src(tmp_path):
+    log.write_client_event(str(tmp_path), {"src": "server", "project_id": "proj_x"})
+    (line,) = _lines(tmp_path / "proj_x" / "events.jsonl")
+    assert line["src"] == "ui"  # a client POST cannot masquerade as a server-generated event

@@ -21,7 +21,7 @@ UNCHANGED = "unchanged"  # re-derived but identical -> nothing written
 
 _last_derive: dict[str, float] = {}  # pid -> last successful derive (in-memory; lost on restart)
 _meta = threading.Lock()  # guards _pid_locks
-_pid_locks: dict[str, threading.Lock] = {}  # per-project lock: serializes its derive+write
+_pid_locks: dict[str, threading.Lock] = {}  # per-project derive lock; unbounded but tiny
 
 
 def _pid_lock(pid: str) -> threading.Lock:

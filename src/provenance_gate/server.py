@@ -53,6 +53,7 @@ class Handler(BaseHTTPRequestHandler):
     cs_db_path: str = ""
     state_dir: str = ""
     min_interval: float = 1.0
+    timeout: float = 30  # per-connection socket timeout so a stalled client can't pin a thread
     _status: int = 200
 
     def _send(self, body: bytes, ctype: str, code: int = 200) -> None:
@@ -95,6 +96,10 @@ class Handler(BaseHTTPRequestHandler):
             if f.exists():
                 return self._send(f.read_bytes(), "text/html")
             return self._json({"error": "cockpit.html not found"}, 404)
+        if not self.cs_db_path and u.path.startswith("/api/"):
+            return self._json(
+                {"error": "no CS database found; set CS_DB or start Claude Science first"}, 503
+            )
         if u.path == "/api/projects":
             cs = substrate.open_cs_db(self.cs_db_path)
             try:

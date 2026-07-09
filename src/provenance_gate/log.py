@@ -73,7 +73,7 @@ def write_client_event(state_dir: str, ev: dict) -> None:
     if not isinstance(ev, dict):
         return
     pid = ev.get("project_id")
-    ev.setdefault("src", "ui")
+    ev["src"] = "ui"  # unconditional — a client POST cannot forge a server-looking src
     ev.setdefault("level", "info")
     ev["ts_recv"] = round(time.time(), 3)  # server clock, for cross-side ordering
     _append(_events_path(state_dir, pid if isinstance(pid, str) else None), ev)
