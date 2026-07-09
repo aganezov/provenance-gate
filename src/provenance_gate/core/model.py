@@ -25,7 +25,7 @@ class ArtifactRef:
 
     artifact_version_id: str  # stable CS id — the pin everything hangs off
     artifact_id: str
-    version_number: int
+    version_number: int | None
     filename: str
     checksum: str  # sha256; unused now, present so faithfulness drops in later
     storage_path: str

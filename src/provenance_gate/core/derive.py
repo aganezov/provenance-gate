@@ -24,11 +24,15 @@ from .model import ArtifactRef, Edge, Frame, Graph, Node
 def _latest_by_artifact(versions: dict[str, dict]) -> dict[str, dict]:
     """Per artifact_id, the version record with the highest ``version_number``. CS bumps it each
     re-run, so the max is the current version. (Adapters may later inject CS's authoritative
-    ``artifacts.latest_version_id``; the audit/UI only need "which version is current".)"""
+    ``artifacts.latest_version_id``; the audit/UI only need "which version is current".)
+    Ties (equal or NULL ``version_number``) break on the higher version id — a stable order, so
+    ``is_latest`` stays stable across derives of the same CS state."""
     latest: dict[str, dict] = {}
     for v in versions.values():
         cur = latest.get(v["artifact_id"])
-        if cur is None or (v["version_number"] or 0) > (cur["version_number"] or 0):
+        v_num = v["version_number"] or 0
+        cur_num = (cur["version_number"] or 0) if cur is not None else -1
+        if cur is None or v_num > cur_num or (v_num == cur_num and v["id"] > cur["id"]):
             latest[v["artifact_id"]] = v
     return latest
 
@@ -58,7 +62,7 @@ def _build_nodes(
     versions: dict[str, dict],
     cells: dict[str, dict],
     deps: list[dict],
-    latest: dict[str, str],
+    latest: dict[str, dict],
 ) -> list[Node]:
     """Group each version under its producing node, then build source + computation Nodes."""
     outputs_by_node: dict[str, list[dict]] = defaultdict(list)

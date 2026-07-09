@@ -76,3 +76,20 @@ def test_derive_flags_latest_version():
     for a in refs.values():
         assert a.latest_version_id == "vx2" and a.latest_version_number == 2
 
+
+def test_derive_latest_tiebreak_is_deterministic():
+    # two versions of one artifact tied on version_number: the higher version id wins, stably,
+    # regardless of scan/insertion order — so is_latest can't flip across derives (determinism).
+    def mk(vid):
+        return {"id": vid, "artifact_id": "a_t", "version_number": 1, "checksum": "c",
+                "storage_path": "p", "parent_version_id": None,
+                "producing_cell_id": "cell_" + vid, "frame_id": None, "filename": "t.csv"}
+
+    cells = {c: {"id": c, "frame_id": None, "cell_index": 0, "source": "s"}
+             for c in ("cell_vA", "cell_vB")}
+    for order in (["vA", "vB"], ["vB", "vA"]):  # both insertion orders → same winner
+        versions = {vid: mk(vid) for vid in order}
+        g = derive.derive_graph("proj_t", versions, [], cells, [], built_at=1.0)
+        latest = {a.artifact_version_id: a.is_latest for n in g.nodes for a in n.output_surface}
+        assert latest == {"vB": True, "vA": False}  # higher id wins the tie, both orders
+
