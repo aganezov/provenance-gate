@@ -1,7 +1,7 @@
 """Generate design/graph_fixtures.json — real /api-shaped snapshots for the cockpit mock harness.
 
 Reads Claude Science **read-only** via the gate's own substrate and dumps a handful of representative
-project graphs (richest DAG, a small one, an empty one, a mid-size one) plus the full project list,
+project graphs (richest, small, empty, mid-size, the showcase, and a multi-version/stale one) plus the list,
 in the exact shape `/api/projects` and `/api/graph` return. Re-run after CS changes:
 
     uv run python design/graph_fixtures.py
@@ -26,10 +26,12 @@ def main() -> None:
     cs = substrate.open_cs_db(server.default_cs_db())
     try:
         projects = substrate.list_projects(cs)
-        sized = sorted(
-            ((len(substrate.read_project_graph(cs, p["id"]).nodes), p["id"], p["name"]) for p in projects),
-            reverse=True,
-        )
+        graphs_all = {p["id"]: substrate.read_project_graph(cs, p["id"]) for p in projects}  # derive once each
+
+        def stale_refs(g):  # output refs that are NOT their artifact's current version
+            return sum(1 for n in g.nodes for a in n.output_surface if not a.is_latest)
+
+        sized = sorted(((len(graphs_all[p["id"]].nodes), p["id"], p["name"]) for p in projects), reverse=True)
         picks: dict[str, str] = {}  # project_id -> why it was picked
         if sized:
             picks[sized[0][1]] = "richest"
@@ -47,8 +49,12 @@ def main() -> None:
             if SHOWCASE.lower() in p["name"].lower():
                 picks[p["id"]] = "showcase"
                 break
+        # a project with stale (non-current) artifact versions — so the version/stale chips have real data
+        stale_ranked = sorted(((stale_refs(graphs_all[p["id"]]), p["id"]) for p in projects), reverse=True)
+        if stale_ranked and stale_ranked[0][0] > 0:
+            picks.setdefault(stale_ranked[0][1], "versions")
 
-        graphs = {pid: dataclasses.asdict(substrate.read_project_graph(cs, pid)) for pid in picks}
+        graphs = {pid: dataclasses.asdict(graphs_all[pid]) for pid in picks}
         # surface the picked (interesting) projects first in the dropdown
         picked_first = [p for p in projects if p["id"] in picks] + [p for p in projects if p["id"] not in picks]
         OUT.write_text(json.dumps({"projects": picked_first, "graphs": graphs}, indent=1))
