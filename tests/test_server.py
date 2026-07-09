@@ -1,6 +1,6 @@
 """server helper: the numeric version compare guarding the conditional-poll short-circuit."""
 
-from provenance_gate.server import _same_version
+from provenance_gate.adapters.external.server import _same_version
 
 
 def test_same_version_compares_numerically():

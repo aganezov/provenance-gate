@@ -16,7 +16,7 @@ from __future__ import annotations
 import sqlite3
 from collections import defaultdict
 
-from .model import ArtifactRef, Edge, Frame, Graph, Node
+from ...core.model import ArtifactRef, Edge, Frame, Graph, Node
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS project_sync(cs_project_id TEXT PRIMARY KEY, built_at REAL);
@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS node(
 CREATE TABLE IF NOT EXISTS surface_item(
     node_id TEXT, role TEXT, kind TEXT, seq INTEGER,
     artifact_version_id TEXT, artifact_id TEXT, version_number INTEGER,
-    filename TEXT, checksum TEXT, storage_path TEXT, parent_version_id TEXT);
+    filename TEXT, checksum TEXT, storage_path TEXT, parent_version_id TEXT, is_latest INTEGER,
+    latest_version_id TEXT, latest_version_number INTEGER);
 CREATE TABLE IF NOT EXISTS edge(
     id TEXT PRIMARY KEY, cs_project_id TEXT, src_node_id TEXT, dst_node_id TEXT,
     via_artifact_version_id TEXT, reference_name TEXT);
@@ -37,6 +38,9 @@ CREATE INDEX IF NOT EXISTS ix_surface_node ON surface_item(node_id);
 CREATE INDEX IF NOT EXISTS ix_edge_project ON edge(cs_project_id);
 CREATE INDEX IF NOT EXISTS ix_frame_project ON frame(cs_project_id);
 """
+
+SCHEMA_VERSION = 2  # bump on any schema change here → stale sidecars are dropped, not migrated
+_TABLES = ("surface_item", "node", "edge", "frame", "project_sync")
 
 
 def _ref(r: sqlite3.Row) -> ArtifactRef:
@@ -49,6 +53,9 @@ def _ref(r: sqlite3.Row) -> ArtifactRef:
         storage_path=r["storage_path"],
         parent_version_id=r["parent_version_id"],
         kind=r["kind"],
+        is_latest=bool(r["is_latest"]),
+        latest_version_id=r["latest_version_id"],
+        latest_version_number=r["latest_version_number"],
     )
 
 
@@ -59,6 +66,10 @@ class Store:
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA busy_timeout=5000")  # wait, not fail, on a locked sidecar
+        if self.conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+            for t in _TABLES:  # derived cache: on a schema change, drop + re-derive (never migrate)
+                self.conn.execute(f"DROP TABLE IF EXISTS {t}")
+            self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self.conn.executescript(SCHEMA)
 
     def close(self) -> None:
@@ -91,9 +102,10 @@ class Store:
                             n.id, role, a.kind, seq,
                             a.artifact_version_id, a.artifact_id, a.version_number,
                             a.filename, a.checksum, a.storage_path, a.parent_version_id,
+                            int(a.is_latest), a.latest_version_id, a.latest_version_number,
                         ))
             self.conn.executemany(
-                "INSERT INTO surface_item VALUES(?,?,?,?,?,?,?,?,?,?,?)", surface_rows
+                "INSERT INTO surface_item VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", surface_rows
             )
             self.conn.executemany(
                 "INSERT INTO edge VALUES(?,?,?,?,?,?)",

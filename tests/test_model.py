@@ -5,7 +5,7 @@ from dataclasses import FrozenInstanceError, asdict
 
 import pytest
 
-from provenance_gate.model import ArtifactRef, Edge, Graph, Node
+from provenance_gate.core.model import ArtifactRef, Edge, Graph, Node
 
 
 def _artifact(**kw) -> ArtifactRef:

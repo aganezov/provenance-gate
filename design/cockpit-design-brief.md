@@ -2,7 +2,7 @@
 
 You are the design lead redesigning a working operator tool: `ui/cockpit.html`, the cockpit for a
 *provenance gate* over AI-agent-produced science. It's a real, live single-file web app served offline
-by a local Python server (`src/provenance_gate/server.py`) and tested by hand against it. **Design against
+by a local Python server (`src/provenance_gate/adapters/external/server.py`) and tested by hand against it. **Design against
 the interactive mock (it auto-runs on baked fixtures with no server); the data + API layer is frozen.**
 
 Open aesthetic latitude on *form*. What is **not** yours to change: **meaning** (§3), the **data/network
@@ -64,6 +64,11 @@ don't touch" is itself a trust cue. It is a **UI, not a document**: scanned and 
    frame as a **bounding container** titled by the frame's task message, with its cells inside. Frames carry
    **no verdict** and never enter trust — grouping only. A cell's own label is just **`cell N`**; the *frame*
    holds the descriptive task text, so cells don't repeat it.
+6. **Artifact version currency (information, not decoration).** Each artifact ref carries its `version_number`
+   and whether it's the **current** version (`is_latest`). A **non-current (stale) version is real trust
+   content**: show the version on the chip, make a stale one read as visually distinct, and note the current
+   version (`latest_version_number`). This is the same currency signal the merge/lineage audit uses — not a
+   verdict (that rail stays neutral in m0), just factual "which version, is it current".
 
 ---
 
@@ -100,7 +105,8 @@ reference — pull the light cues from it directly:
     dagre lays out compound graphs). Frames are **structural only** — no verdict, no trust.
   - **Compact node cards.** The node label is now **`cell N`** for a computation (a source shows its filename);
     the *frame container* carries the task message, so cells don't repeat it. Card = label + a **`kind` badge**
-    (source/computation) + output artifact chips + the neutral **verdict rail**. (Node contents + edge styling
+    (source/computation) + output artifact chips (each = **filename + version**; a **stale** version reads
+    distinct, with the current version noted) + the neutral **verdict rail**. (Node contents + edge styling
     iterate later — compact is fine.)
   Interactions:
   - **Pan / zoom**, and **fit-to-view that accounts only for the graph-view panel** — when the node inspector
@@ -146,8 +152,9 @@ We hand you **`cockpit.mock.html`** — the clean `ui/cockpit.html` with a baked
 
 - **In your sandbox (no server):** `getProjects()`/`getGraph()` auto-fall-back to the baked fixtures and a
   **◆ MOCK DATA** badge appears. The **project dropdown switches scenarios** — the fixtures include a **large
-  DAG (~83 nodes, several frames)**, a **small one (4 cells in one frame)**, a **mid one**, and an **empty
-  project** — so you can design every state, including **frame containers**, with no backend.
+  DAG (~83 nodes, several frames)**, a **small one (4 cells in one frame)**, a **mid one**, an **empty
+  project**, and a **multi-version project** (artifacts at several versions, some **stale** vs current) — so you
+  can design every state, including **frame containers** and the **version/stale chips**, with no backend.
 - **On our server:** the same calls hit the real API — the mock is inert.
 
 Design the cockpit **around** the two fenced blocks (§2). Deliver **one self-contained file**; the scaffolding
@@ -167,7 +174,9 @@ Same-origin `fetch`, `GET`, wrapped by `getProjects()` / `getGraph()` in the PG:
     computation, the **filename** for a source (the *frame* holds the task message); `cs_frame_id` links the node
     to its frame.
   - **ArtifactRef**: `{ artifact_version_id, artifact_id, version_number, filename, checksum, storage_path,
-    parent_version_id, kind }`
+    parent_version_id, kind, is_latest, latest_version_id, latest_version_number }` — `is_latest` = whether this
+    is its artifact's **current** version; `latest_version_id` / `latest_version_number` point to that current
+    version (they equal this ref when `is_latest` is true).
   - **edge**: `{ id, src_node_id, dst_node_id, via_artifact_version_id, reference_name }`
   - **frame**: `{ id, label, parent_frame_id, kind }` — a CS task grouping cells; draw as a bounding container
     titled by `label`, with member nodes (those whose `cs_frame_id == id`) inside. Structural only — no trust.
