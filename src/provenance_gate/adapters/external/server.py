@@ -26,6 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from ...core import audit
 from . import activation, log, substrate, workspace
 
 UI_DIR = Path(__file__).resolve().parents[4] / "ui"  # …/adapters/external/server.py → repo root
@@ -120,7 +121,11 @@ class Handler(BaseHTTPRequestHandler):
             # built_at advances only on a real change; plain 200, no cache quirks.
             if _same_version(parse_qs(u.query).get("v", [""])[0], g.built_at):
                 return self._json({"unchanged": True, "built_at": g.built_at})
-            return self._json(dataclasses.asdict(g))
+            resp = dataclasses.asdict(g)
+            verdicts = audit.audit_graph(g)  # computed per read, never stored
+            for nd in resp["nodes"]:
+                nd["verdict"] = dataclasses.asdict(verdicts[nd["id"]])
+            return self._json(resp)
         self._json({"error": "not found"}, 404)
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API

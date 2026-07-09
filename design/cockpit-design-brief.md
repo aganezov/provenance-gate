@@ -54,9 +54,11 @@ don't touch" is itself a trust cue. It is a **UI, not a document**: scanned and 
 
 1. **Node `kind`: `source` vs `computation`.** A *source* is a raw input / provenance root (no producing
    cell); a *computation* is derived. Must read as different in form, not just label.
-2. **The verdict rail (forward hook).** Reserve a per-node **status slot** (a rail/stripe). In m0 every node
-   is **unevaluated (neutral)** — trust verdicts (green/amber/red) land later. Design the slot so color can
-   light up later **without relayout**. Don't invent states now.
+2. **The verdict rail (now live).** Each node carries a computed **`verdict`** (`/api/graph`, Appendix A). The
+   per-node status slot renders `verdict.level`: **`clean` → neutral** (the calm default — *not* a positive
+   claim), **`stale_input` → amber caution** (built on a superseded version), **`version_mix` → red**
+   (internally inconsistent — combines two versions of one artifact). **Green stays reserved** for a future
+   *positive* attestation we haven't earned. The slot must light **without relayout**; sources are always `clean`.
 3. **Frozen artifact = checksum pin.** A filename + short checksum is the *pin* everything hangs off — the
    core trust content. Give that mono/tabular typography genuine care.
 4. **Read-only stance.** The tool observes Claude Science and never mutates it — a calm, persistent trust cue.
@@ -106,7 +108,7 @@ reference — pull the light cues from it directly:
   - **Compact node cards.** The node label is now **`cell N`** for a computation (a source shows its filename);
     the *frame container* carries the task message, so cells don't repeat it. Card = label + a **`kind` badge**
     (source/computation) + output artifact chips (each = **filename + version**; a **stale** version reads
-    distinct, with the current version noted) + the neutral **verdict rail**. (Node contents + edge styling
+    distinct, with the current version noted) + the **verdict rail** (now lit per `verdict.level`, §3.2). (Node contents + edge styling
     iterate later — compact is fine.)
   Interactions:
   - **Pan / zoom**, and **fit-to-view that accounts only for the graph-view panel** — when the node inspector
@@ -170,9 +172,13 @@ Same-origin `fetch`, `GET`, wrapped by `getProjects()` / `getGraph()` in the PG:
 - `getProjects()` → `GET /api/projects` → `[{ id, name }]`
 - `getGraph(pid)` → `GET /api/graph?project=<id>` → `{ cs_project_id, built_at, nodes:[…], edges:[…], frames:[…] }`
   - **node**: `{ id, cs_project_id, kind ('source'|'computation'), label, input_surface:[ArtifactRef],
-    output_surface:[ArtifactRef], cs_frame_id, cs_cell_id, cell_index, code }` — `label` is **`cell N`** for a
-    computation, the **filename** for a source (the *frame* holds the task message); `cs_frame_id` links the node
-    to its frame.
+    output_surface:[ArtifactRef], cs_frame_id, cs_cell_id, cell_index, code, verdict }` — `label` is **`cell N`**
+    for a computation, the **filename** for a source (the *frame* holds the task message); `cs_frame_id` links the
+    node to its frame.
+  - **verdict** (computed per node; drives §3.2's rail): `{ level ('clean'|'stale_input'|'version_mix'),
+    stale:[VersionIssue], mixed:[VersionIssue] }` — `stale` = the node's non-current direct inputs; `mixed` =
+    artifacts its lineage reconverges on at >1 version. **VersionIssue**: `{ artifact (filename), artifact_id,
+    versions:[numbers], current (number) }`. Sources are always `clean`.
   - **ArtifactRef**: `{ artifact_version_id, artifact_id, version_number, filename, checksum, storage_path,
     parent_version_id, kind, is_latest, latest_version_id, latest_version_number }` — `is_latest` = whether this
     is its artifact's **current** version; `latest_version_id` / `latest_version_number` point to that current
@@ -184,6 +190,6 @@ Same-origin `fetch`, `GET`, wrapped by `getProjects()` / `getGraph()` in the PG:
   node's own fields, the 2-second poll (re-fetch `/api/graph`). **`getGraph()` returns `null` when nothing
   changed since the last poll — skip the re-render then; only re-render when you get a real graph.**
 
-> m0 is structure only — no write endpoints, no verdict/assumption/version fields yet. Those arrive later and
-> extend `/api/graph` **additively**; design the verdict rail + inspector with room to grow, but don't invent
-> those fields now.
+> Structure + version currency + the computed verdict are live now (still read-only, no write endpoints).
+> Assumptions and richer verdicts arrive later, extending `/api/graph` **additively** — design the rail +
+> inspector with room to grow (e.g. a future positive/attested state), but don't invent fields not in Appendix A.
