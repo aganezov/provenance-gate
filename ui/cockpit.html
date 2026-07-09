@@ -5510,6 +5510,11 @@ async function switchProject(pid){
   PG.action('select_project', { project: pid });
   deselect();
   try {
+    // Explicit user switch: force a FULL fetch. getGraph is the conditional poll (?v=built_at ->
+    // {unchanged} -> null), which is correct for the 2s refresh of the *current* project but wrong
+    // here — re-selecting a previously-viewed project would 304 and leave the prior DAG on screen.
+    // Dropping our last-seen version for this pid makes getGraph fetch the full graph and re-render.
+    delete _versions[pid];
     const g = await getGraph(pid);
     if (g){ state.pendingFit = true; setGraph(g); }   // one-time fit on project load, regardless of sticky flags
   } catch (e){ showError(e); }
