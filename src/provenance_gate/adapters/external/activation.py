@@ -11,8 +11,8 @@ from __future__ import annotations
 import threading
 import time
 
+from ...core.model import Graph
 from . import substrate, workspace
-from .model import Graph
 from .store import Store
 
 CACHED = "cached"        # served the sidecar without touching CS (inside the throttle window)
@@ -44,11 +44,7 @@ def get_fresh(
             if (now - _last_derive.get(pid, 0.0)) < min_interval:
                 return store.load_graph(pid), CACHED
             old = store.load_graph(pid)
-            cs = substrate.open_cs_db(cs_db_path)
-            try:
-                new = substrate.read_project_graph(cs, pid)
-            finally:
-                cs.close()
+            new = substrate.CsDbReader(cs_db_path).read_project_graph(pid)
             # First derive has old.built_at==0.0 (empty sidecar); store even an empty graph then,
             # so an empty project gets a real built_at (snapshot age + poll token), not epoch 0.
             changed = (

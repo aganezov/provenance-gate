@@ -3,7 +3,7 @@
 import json
 import threading
 
-from provenance_gate import log
+from provenance_gate.adapters.external import log
 
 
 def _lines(path):

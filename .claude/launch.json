@@ -4,7 +4,7 @@
     {
       "name": "cockpit",
       "runtimeExecutable": "uv",
-      "runtimeArgs": ["run", "python", "-m", "provenance_gate.server"],
+      "runtimeArgs": ["run", "pg-serve"],
       "port": 8799
     }
   ]

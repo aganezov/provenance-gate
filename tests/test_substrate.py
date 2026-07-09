@@ -3,8 +3,8 @@
 The operon-shaped fixture (`cs_conn`) lives in conftest.py and is shared with the service test.
 """
 
-from provenance_gate.model import Frame
-from provenance_gate.substrate import list_projects, read_project_graph
+from provenance_gate.adapters.external.substrate import list_projects, read_project_graph
+from provenance_gate.core.model import Frame
 
 
 def test_list_projects_newest_first(cs_conn):

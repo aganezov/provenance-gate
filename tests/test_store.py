@@ -1,7 +1,7 @@
 """The sidecar round-trips a Graph exactly, resync replaces a project's rows, projects isolate."""
 
-from provenance_gate.model import ArtifactRef, Edge, Frame, Graph, Node
-from provenance_gate.store import Store
+from provenance_gate.adapters.external.store import Store
+from provenance_gate.core.model import ArtifactRef, Edge, Frame, Graph, Node
 
 
 def _ref(**kw) -> ArtifactRef:

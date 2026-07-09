@@ -25,12 +25,15 @@ class ArtifactRef:
 
     artifact_version_id: str  # stable CS id — the pin everything hangs off
     artifact_id: str
-    version_number: int
+    version_number: int | None
     filename: str
     checksum: str  # sha256; unused now, present so faithfulness drops in later
     storage_path: str
     parent_version_id: str | None = None  # revision link; keeps "revision != conflict" recoverable
     kind: str = "artifact"  # wire discriminator seam (future: "linked_value")
+    is_latest: bool = True  # current version of its artifact? drives the stale/mixed-version audit
+    latest_version_id: str | None = None  # the artifact's current version id (self if is_latest)
+    latest_version_number: int | None = None  # its number; UI shows "(current vN)" on stale chips
 
 
 @dataclass(frozen=True, slots=True)
