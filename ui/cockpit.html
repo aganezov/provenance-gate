@@ -265,11 +265,20 @@ html[data-theme="dark"] .frame{ background:color-mix(in oklab, var(--ink) 4%, tr
 .nfile{ margin-top:.5rem; font-family:var(--mono); font-size:.76rem; font-weight:600; color:var(--ink);
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .nfile.none{ color:var(--ink-3); font-weight:500; font-style:italic; }
-.chip{ font-family:var(--mono); font-size:.62rem; color:var(--mono-ink);
-  background:var(--mono-bg); border-radius:5px; padding:.1rem .34rem; max-width:100%;
-  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.chip.more{ color:var(--ink-2); background:transparent; padding-left:0; }
-.chip.none{ color:var(--ink-3); background:transparent; padding-left:0; font-style:italic; }
+.chip{ display:inline-flex; align-items:baseline; font-family:var(--mono); font-size:.62rem; color:var(--mono-ink);
+  background:var(--mono-bg); border:1px solid transparent; border-radius:5px; padding:.1rem .3rem .1rem .38rem; max-width:100%; }
+.chip .chip-file{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* version-currency sub-pill — NOT a verdict (green/red stays reserved for the trust rail): a current
+   version reads NEUTRAL/quiet; only a STALE one is tinted red (a factual currency warning). */
+.chip .chip-v{ flex:0 0 auto; display:inline-flex; align-items:baseline; gap:.24rem; margin-left:.34rem;
+  border-radius:4px; padding:.02rem .3rem; background:transparent; }
+.chip .chip-ver{ color:var(--ink-2); }
+.chip .chip-cur{ color:var(--ink-2); }
+.chip.stale .chip-v{ background:color-mix(in oklab, var(--fail) 15%, transparent); }
+.chip.stale .chip-ver,.chip.stale .chip-cur{ color:var(--fail); }
+.chip.more,.chip.none{ display:inline; background:transparent; padding-left:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.chip.more{ color:var(--ink-2); }
+.chip.none{ color:var(--ink-3); font-style:italic; }
 
 /* graph HUD (bottom-left controls) */
 .hud{ position:absolute; right:14px; left:auto; bottom:14px; z-index:4; display:flex; align-items:center; gap:.4rem;
@@ -348,7 +357,11 @@ html[data-theme="dark"] .frame{ background:color-mix(in oklab, var(--ink) 4%, tr
   transform:rotate(-45deg); transition:transform .15s; flex:0 0 auto; }
 .art.open .art-h .chev{ transform:rotate(45deg); }
 .art-file{ font-size:.74rem; color:var(--ink); font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:0 1 auto; }
-.ver{ font-family:var(--mono); font-size:.6rem; color:var(--accent-ink); background:var(--accent-soft); border-radius:4px; padding:.06rem .32rem; flex:0 0 auto; }
+.ver{ font-family:var(--mono); font-size:.6rem; color:var(--ink-2); background:transparent; border:1px solid transparent; border-radius:4px; padding:.06rem .32rem; flex:0 0 auto; white-space:nowrap; }
+/* STALE artifact ref in the inspector rows — matches the node-card stale language:
+   opaque restrained reddish fill (potential issue); current version noted after it. */
+.ver.stale{ color:var(--fail); background:color-mix(in oklab, var(--fail) 15%, transparent); border-color:transparent; }
+.ver-cur{ color:inherit; white-space:nowrap; }
 .sum-mini{ margin-left:auto; font-family:var(--mono); font-size:.62rem; color:var(--ink-3); background:var(--mono-bg); border-radius:4px; padding:.05rem .32rem; flex:0 0 auto; letter-spacing:.02em; }
 .art-c{ display:none; padding:0 .55rem .52rem; }
 .art.open .art-c{ display:block; }
@@ -4622,6 +4635,10 @@ module.exports = __WEBPACK_EXTERNAL_MODULE__4__;
 
   <div class="rule"></div>
 
+  <button class="icon-btn" id="btn-theme" title="Toggle light / dark" aria-label="Toggle theme">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.2M12 19.8V22M4.2 4.2l1.6 1.6M18.2 18.2l1.6 1.6M2 12h2.2M19.8 12H22M4.2 19.8l1.6-1.6M18.2 5.8l1.6-1.6"/></svg>
+  </button>
+
   <div class="picker">
     <label for="project">Project</label>
     <div class="sel-wrap"><select id="project"></select></div>
@@ -4650,10 +4667,6 @@ module.exports = __WEBPACK_EXTERNAL_MODULE__4__;
   <div class="readonly" title="The gate observes Claude Science read-only and never mutates it">
     <span class="eye"></span>reads Claude Science · read-only
   </div>
-
-  <button class="icon-btn" id="btn-theme" title="Toggle light / dark" aria-label="Toggle theme">
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.2M12 19.8V22M4.2 4.2l1.6 1.6M18.2 18.2l1.6 1.6M2 12h2.2M19.8 12H22M4.2 19.8l1.6-1.6M18.2 5.8l1.6-1.6"/></svg>
-  </button>
 </header>
 
 <main class="stage" id="stage">
@@ -4786,7 +4799,22 @@ const PG = (() => {
    (rankDir LR), with rich HTML node cards overlaid on the canvas.
    ============================================================ */
 
-const V = { W: 250, H: 74 };   // node card size (also the cy node box)
+const V = { W: 250, H: 88 };   // node card size (also the cy node box)
+
+// output artifact chip: filename │ version. A ref that isn't its artifact's current
+// version (is_latest === false) reads STALE — opaque reddish (potential issue) — and notes
+// the current version in parens. Version currency (same signal the lineage audit uses).
+function outChip(a){
+  const stale = a.is_latest === false;
+  const cur = stale ? `<span class="chip-cur">(v${escHtml(a.latest_version_number)})</span>` : '';
+  const t = stale
+    ? `${a.filename} v${a.version_number} — stale, current is v${a.latest_version_number}`
+    : `${a.filename} v${a.version_number}`;
+  return `<span class="chip${stale ? ' stale' : ''}" title="${escHtml(t)}">`
+       + `<span class="chip-file">${escHtml(a.filename)}</span>`
+       + `<span class="chip-v"><span class="chip-ver">v${escHtml(a.version_number)}</span>${cur}</span>`
+       + `</span>`;
+}
 
 const state = {
   current: null,
@@ -4902,7 +4930,7 @@ function nodeCard(n){
       : `<div class="nfile none">provenance root</div>`;
   } else {
     let chips = '';
-    outs.slice(0, 2).forEach(a => { chips += `<span class="chip" title="${escHtml(a.filename)}">${escHtml(a.filename)}</span>`; });
+    outs.slice(0, 2).forEach(a => { chips += outChip(a); });
     if (outs.length > 2) chips += `<span class="chip more">+${outs.length - 2}</span>`;
     if (!outs.length) chips = `<span class="chip none">no output</span>`;
     main = `<div class="narts">${chips}</div>`;
@@ -5217,11 +5245,12 @@ function idRow(k, v){
 function artRow(a){
   const open = state.artOpen.has(a.artifact_version_id);
   const sum = a.checksum || '';
+  const stale = a.is_latest === false;
   return `<div class="art ${open ? 'open' : ''}" data-art="${escHtml(a.artifact_version_id)}">
     <button class="art-h" data-art-toggle="${escHtml(a.artifact_version_id)}">
       <span class="chev"></span>
       <span class="art-file mono" title="${escHtml(a.filename)}">${escHtml(a.filename)}</span>
-      <span class="ver">v${escHtml(a.version_number)}</span>
+      <span class="ver${stale ? ' stale' : ''}"${stale ? ` title="current version is v${escHtml(a.latest_version_number)}"` : ''}>v${escHtml(a.version_number)}${stale ? ` <span class="ver-cur">(v${escHtml(a.latest_version_number)})</span>` : ''}</span>
       <span class="sum-mini">${escHtml(sum.slice(0, 8))}</span>
     </button>
     <div class="art-c">
