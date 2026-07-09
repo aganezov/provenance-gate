@@ -16,7 +16,7 @@ from __future__ import annotations
 import sqlite3
 from collections import defaultdict
 
-from .model import ArtifactRef, Edge, Frame, Graph, Node
+from ...core.model import ArtifactRef, Edge, Frame, Graph, Node
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS project_sync(cs_project_id TEXT PRIMARY KEY, built_at REAL);

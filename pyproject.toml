@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []  # v0 is stdlib-only (sqlite3, http.server)
 
+[project.scripts]
+pg-serve = "provenance_gate.adapters.external.server:main"  # external surface entrypoint
+
 [dependency-groups]
 dev = [
     "pytest>=8",

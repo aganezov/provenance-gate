@@ -4,8 +4,8 @@ import os
 
 import pytest
 
-from provenance_gate import substrate, workspace
-from provenance_gate.store import Store
+from provenance_gate.adapters.external import substrate, workspace
+from provenance_gate.adapters.external.store import Store
 
 
 def test_pid_validation():

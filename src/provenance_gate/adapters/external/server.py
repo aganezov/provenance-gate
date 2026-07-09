@@ -10,7 +10,7 @@ Lazy: nothing derives at startup; ``GET /api/graph`` derives the requested proje
 (throttled, change-detected), so only the project in view is kept warm and the derive is correlated
 to its request. Every request boundary + internal op is logged to the project's ``events.jsonl``
 (routine polls at ``"trace"``, changes/actions/errors at ``"info"``). The UI posts its own events
-to ``POST /api/log``. Run: ``uv run python -m provenance_gate.server``.
+to ``POST /api/log``. Run: ``uv run pg-serve`` (external surface entrypoint).
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from urllib.parse import parse_qs, urlparse
 
 from . import activation, log, substrate, workspace
 
-UI_DIR = Path(__file__).resolve().parents[2] / "ui"
+UI_DIR = Path(__file__).resolve().parents[4] / "ui"  # …/adapters/external/server.py → repo root
 
 
 def default_cs_db() -> str:
@@ -101,11 +101,7 @@ class Handler(BaseHTTPRequestHandler):
                 {"error": "no CS database found; set CS_DB or start Claude Science first"}, 503
             )
         if u.path == "/api/projects":
-            cs = substrate.open_cs_db(self.cs_db_path)
-            try:
-                return self._json(substrate.list_projects(cs))
-            finally:
-                cs.close()
+            return self._json(substrate.CsDbReader(self.cs_db_path).list_projects())
         if u.path == "/api/graph":
             pid = parse_qs(u.query).get("project", [""])[0]
             if not workspace.is_valid_pid(pid):

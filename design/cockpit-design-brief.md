@@ -2,7 +2,7 @@
 
 You are the design lead redesigning a working operator tool: `ui/cockpit.html`, the cockpit for a
 *provenance gate* over AI-agent-produced science. It's a real, live single-file web app served offline
-by a local Python server (`src/provenance_gate/server.py`) and tested by hand against it. **Design against
+by a local Python server (`src/provenance_gate/adapters/external/server.py`) and tested by hand against it. **Design against
 the interactive mock (it auto-runs on baked fixtures with no server); the data + API layer is frozen.**
 
 Open aesthetic latitude on *form*. What is **not** yours to change: **meaning** (§3), the **data/network

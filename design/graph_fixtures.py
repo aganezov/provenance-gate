@@ -15,7 +15,7 @@ import dataclasses
 import json
 import pathlib
 
-from provenance_gate import server, substrate
+from provenance_gate.adapters.external import server, substrate
 
 OUT = pathlib.Path(__file__).resolve().parent / "graph_fixtures.json"
 # a hand-built showcase project (frames + fan-out/in + a diamond) to always bake in, regardless of size

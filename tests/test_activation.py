@@ -2,7 +2,7 @@
 
 import pytest
 
-from provenance_gate import activation
+from provenance_gate.adapters.external import activation
 
 
 @pytest.fixture(autouse=True)
