@@ -5762,7 +5762,8 @@ function showEdgePop(edge, oe){
     const a = state.avMap[e.via_artifact_version_id];
     const file = a ? a.file : (e.reference_name || 'artifact');
     const stale = a && a.latest === false;
-    const ver = a ? `v${escHtml(a.ver)}${stale ? ` (current v${escHtml(a.lv)})` : ''}` : '';
+    const cur = (stale && a.lv != null) ? ` (current v${escHtml(a.lv)})` : '';
+    const ver = a ? `v${escHtml(a.ver)}${cur}` : '';
     const ref = (e.reference_name && a && e.reference_name !== a.file) ? `<span class="ep-ref">as ${escHtml(e.reference_name)}</span>` : '';
     return `<div class="ep-row"><span class="ep-file" title="${escHtml(file)}">${escHtml(file)}</span>`
          + (ver ? `<span class="ep-v${stale ? ' stale' : ''}">${ver}</span>` : '') + ref + `</div>`;

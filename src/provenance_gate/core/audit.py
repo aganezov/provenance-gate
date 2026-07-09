@@ -103,6 +103,8 @@ def _out_cones(graph: Graph, deps: dict[str, set[str]]) -> dict[str, dict[str, s
     for nid in _toposort([n.id for n in graph.nodes], deps):
         cone: dict[str, set[str]] = {}
         for pid in deps[nid]:
+            if pid not in out:
+                continue  # cycle recovery: predecessor not yet computed (DAG shouldn't cycle)
             for aid, vers in out[pid].items():
                 cone.setdefault(aid, set()).update(vers)
         for a in nodes[nid].output_surface:      # produced version subsumes prior of same artifact
@@ -123,11 +125,14 @@ def _in_cone(out_cones: dict[str, dict[str, set[str]]], producers: set[str]) -> 
 def _verdict(node: Node, in_cone: dict[str, set[str]], ref_of: dict[str, ArtifactRef]) -> Verdict:
     produced = {a.artifact_id for a in node.output_surface}
     # STALE_INPUT: non-current direct inputs, excluding an artifact the node itself revises
-    stale = tuple(
-        VersionIssue(r.filename, r.artifact_id, (r.version_number,), r.latest_version_number)
-        for r in node.input_surface
-        if r.is_latest is False and r.artifact_id not in produced
-    )
+    stale = tuple(sorted(
+        (
+            VersionIssue(r.filename, r.artifact_id, (r.version_number,), r.latest_version_number)
+            for r in node.input_surface
+            if r.is_latest is False and r.artifact_id not in produced
+        ),
+        key=lambda s: s.artifact,
+    ))
     # VERSION_MIX: an artifact reaching the node at >1 live version in its input lineage
     mixed = []
     for aid, vids in in_cone.items():
@@ -152,15 +157,20 @@ def audit_graph(graph: Graph) -> dict[str, Verdict]:
 
 
 def audit_inputs(graph: Graph, input_version_ids: list[str]) -> Verdict:
-    """Verdict for a hypothetical node consuming ``input_version_ids`` — a planned write, the
-    pre-write audit). Reuses the same cone machinery; the node produces nothing."""
+    """Verdict for a planned node consuming ``input_version_ids`` — the skill's pre-write audit.
+    Reuses the cone machinery; the node produces nothing. Every id must resolve in ``graph`` — an
+    unknown id would silently drop to a false ``CLEAN``, so we raise instead of trusting a partial
+    verdict (the skill surfaces the gap)."""
     producer_of = _producer_map(graph)
     ref_of = _ref_map(graph)
+    unresolvable = [v for v in input_version_ids if v not in ref_of]
+    if unresolvable:
+        raise ValueError(f"audit_inputs: version ids not in graph: {unresolvable}")
     deps = _deps(graph, producer_of)
     out_cones = _out_cones(graph, deps)
     planned = Node(
         id="\x00planned", cs_project_id=graph.cs_project_id, kind="computation", label="planned",
-        input_surface=tuple(ref_of[v] for v in input_version_ids if v in ref_of),
+        input_surface=tuple(ref_of[v] for v in input_version_ids),
     )
     producers = {producer_of[v] for v in input_version_ids if v in producer_of}
     producers.discard(planned.id)

@@ -4,6 +4,8 @@ Covers the two verdicts and the revision edge case we care most about: a linear 
 must NOT read as a mix, and the revising cell must NOT read as stale.
 """
 
+import pytest
+
 from provenance_gate.core import audit
 from provenance_gate.core.model import Graph, Node
 
@@ -97,3 +99,33 @@ def test_audit_inputs_hypothetical_planned_write():
     src, cB, cX, cY, av1, bv1 = _divergent_nodes()
     verdict = audit.audit_inputs(Graph(cs_project_id="p", nodes=(src, cB, cX, cY)), ["av1", "bv1"])
     assert verdict.level == audit.VERSION_MIX and set(verdict.mixed[0].versions) == {1, 2}
+
+
+def test_audit_inputs_raises_on_unknown_id():
+    # PR #6 review: an id not in the graph would silently drop -> false CLEAN; raise instead
+    src, cB, cX, cY, av1, bv1 = _divergent_nodes()
+    g = Graph(cs_project_id="p", nodes=(src, cB, cX, cY))
+    with pytest.raises(ValueError):
+        audit.audit_inputs(g, ["av1", "nope"])
+
+
+def test_audit_survives_a_cycle():
+    # PR #6 review: a corrupt (cyclic) graph must degrade, not KeyError in the cone pass
+    aout = ref("aout", "A", 1, 1, True, "a.csv")
+    bout = ref("bout", "B", 1, 1, True, "b.csv")
+    nA = node("nA", inputs=[bout], outputs=[aout])
+    nB = node("nB", inputs=[aout], outputs=[bout])   # A <-> B cycle
+    v = audit.audit_graph(Graph(cs_project_id="p", nodes=(nA, nB)))
+    assert set(v) == {"nA", "nB"}   # a verdict per node, no crash
+
+
+def test_stale_issues_sorted_by_artifact():
+    # PR #6 review: stale[] must be deterministically ordered (by filename), not input order
+    zst = ref("zst", "Z", 1, 2, False, "z.csv")
+    ast = ref("ast", "A", 1, 2, False, "a.csv")
+    sZ = node("sZ", outputs=[zst], kind="source")
+    sA = node("sA", outputs=[ast], kind="source")
+    c = node("c", inputs=[zst, ast], outputs=[ref("out", "O", 1, 1, True, "o.csv")])
+    v = audit.audit_graph(Graph(cs_project_id="p", nodes=(sZ, sA, c)))
+    assert v["c"].level == audit.STALE_INPUT
+    assert [i.artifact for i in v["c"].stale] == ["a.csv", "z.csv"]
