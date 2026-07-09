@@ -70,6 +70,9 @@ def test_derive_flags_latest_version():
     cells = {"c1": {"id": "c1", "frame_id": None, "cell_index": 1, "source": "s1"},
              "c2": {"id": "c2", "frame_id": None, "cell_index": 2, "source": "s2"}}
     g = derive.derive_graph("proj_x", versions, [], cells, [], built_at=1.0)
-    is_latest = {a.artifact_version_id: a.is_latest for n in g.nodes for a in n.output_surface}
-    assert is_latest == {"vx1": False, "vx2": True}  # highest version_number is the current one
+    refs = {a.artifact_version_id: a for n in g.nodes for a in n.output_surface}
+    assert refs["vx1"].is_latest is False and refs["vx2"].is_latest is True  # max version_number
+    # every ref points at the artifact's current version (vx2, v2) — the UI's "(current vN)" chip
+    for a in refs.values():
+        assert a.latest_version_id == "vx2" and a.latest_version_number == 2
 

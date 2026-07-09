@@ -21,20 +21,19 @@ from collections import defaultdict
 from .model import ArtifactRef, Edge, Frame, Graph, Node
 
 
-def _latest_by_artifact(versions: dict[str, dict]) -> dict[str, str]:
-    """Per artifact_id, the version id with the highest ``version_number``. CS bumps it each re-run,
-    so the max is the current version. (Adapters may later inject CS's authoritative
-    ``artifacts.latest_version_id``; the audit only needs "which version is current".)"""
-    latest: dict[str, str] = {}
-    best: dict[str, int] = {}
+def _latest_by_artifact(versions: dict[str, dict]) -> dict[str, dict]:
+    """Per artifact_id, the version record with the highest ``version_number``. CS bumps it each
+    re-run, so the max is the current version. (Adapters may later inject CS's authoritative
+    ``artifacts.latest_version_id``; the audit/UI only need "which version is current".)"""
+    latest: dict[str, dict] = {}
     for v in versions.values():
-        aid, vn = v["artifact_id"], v["version_number"] or 0
-        if aid not in best or vn > best[aid]:
-            best[aid], latest[aid] = vn, v["id"]
+        cur = latest.get(v["artifact_id"])
+        if cur is None or (v["version_number"] or 0) > (cur["version_number"] or 0):
+            latest[v["artifact_id"]] = v
     return latest
 
 
-def _ref(v: dict, is_latest: bool) -> ArtifactRef:
+def _ref(v: dict, latest_v: dict) -> ArtifactRef:
     return ArtifactRef(
         artifact_version_id=v["id"],
         artifact_id=v["artifact_id"],
@@ -43,7 +42,9 @@ def _ref(v: dict, is_latest: bool) -> ArtifactRef:
         checksum=v["checksum"],
         storage_path=v["storage_path"],
         parent_version_id=v["parent_version_id"],
-        is_latest=is_latest,
+        is_latest=v["id"] == latest_v["id"],
+        latest_version_id=latest_v["id"],
+        latest_version_number=latest_v["version_number"],
     )
 
 
@@ -69,8 +70,8 @@ def _build_nodes(
         if cv is not None:
             inputs_by_node[_producer_id(cv)].add(d["input_v"])
 
-    def ref(v: dict) -> ArtifactRef:  # is this ref its artifact's current version?
-        return _ref(v, latest.get(v["artifact_id"]) == v["id"])
+    def ref(v: dict) -> ArtifactRef:  # tag each ref with its artifact's current version
+        return _ref(v, latest[v["artifact_id"]])
 
     nodes: list[Node] = []
     for nid, out_versions in outputs_by_node.items():

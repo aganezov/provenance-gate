@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS node(
 CREATE TABLE IF NOT EXISTS surface_item(
     node_id TEXT, role TEXT, kind TEXT, seq INTEGER,
     artifact_version_id TEXT, artifact_id TEXT, version_number INTEGER,
-    filename TEXT, checksum TEXT, storage_path TEXT, parent_version_id TEXT, is_latest INTEGER);
+    filename TEXT, checksum TEXT, storage_path TEXT, parent_version_id TEXT, is_latest INTEGER,
+    latest_version_id TEXT, latest_version_number INTEGER);
 CREATE TABLE IF NOT EXISTS edge(
     id TEXT PRIMARY KEY, cs_project_id TEXT, src_node_id TEXT, dst_node_id TEXT,
     via_artifact_version_id TEXT, reference_name TEXT);
@@ -38,7 +39,7 @@ CREATE INDEX IF NOT EXISTS ix_edge_project ON edge(cs_project_id);
 CREATE INDEX IF NOT EXISTS ix_frame_project ON frame(cs_project_id);
 """
 
-SCHEMA_VERSION = 1  # bump on any schema change here → stale sidecars are dropped, not migrated
+SCHEMA_VERSION = 2  # bump on any schema change here → stale sidecars are dropped, not migrated
 _TABLES = ("surface_item", "node", "edge", "frame", "project_sync")
 
 
@@ -53,6 +54,8 @@ def _ref(r: sqlite3.Row) -> ArtifactRef:
         parent_version_id=r["parent_version_id"],
         kind=r["kind"],
         is_latest=bool(r["is_latest"]),
+        latest_version_id=r["latest_version_id"],
+        latest_version_number=r["latest_version_number"],
     )
 
 
@@ -99,10 +102,10 @@ class Store:
                             n.id, role, a.kind, seq,
                             a.artifact_version_id, a.artifact_id, a.version_number,
                             a.filename, a.checksum, a.storage_path, a.parent_version_id,
-                            int(a.is_latest),
+                            int(a.is_latest), a.latest_version_id, a.latest_version_number,
                         ))
             self.conn.executemany(
-                "INSERT INTO surface_item VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", surface_rows
+                "INSERT INTO surface_item VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", surface_rows
             )
             self.conn.executemany(
                 "INSERT INTO edge VALUES(?,?,?,?,?,?)",
