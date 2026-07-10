@@ -5925,7 +5925,14 @@ function updateHeader(){
   el.cNodes.textContent = g ? g.nodes.length : 0;
   el.cEdges.textContent = g ? g.edges.length : 0;
 }
-function pulseLive(){ el.liveDot.classList.remove('beat'); void el.liveDot.offsetWidth; el.liveDot.classList.add('beat'); }
+// In CS the cockpit is a STATIC snapshot (render_cockpit bakes one graph); the skill sets __PG_SNAPSHOT
+// so we present an honest "Snapshot · <bake date>" instead of a pulsing "Live … ago" + a dead 2s poll.
+const SNAPSHOT = !!window.__PG_SNAPSHOT;
+if (SNAPSHOT){
+  const lbl = document.querySelector('.live .lbl'); if (lbl) lbl.textContent = 'Snapshot';
+  const box = document.querySelector('.live'); if (box) box.title = 'Static provenance snapshot — not a live poll';
+}
+function pulseLive(){ if (SNAPSHOT) return; el.liveDot.classList.remove('beat'); void el.liveDot.offsetWidth; el.liveDot.classList.add('beat'); }
 function parseBuilt(v){
   if (v == null) return null;
   if (typeof v === 'number') return v < 1e12 ? v * 1000 : v;
@@ -5935,6 +5942,11 @@ function parseBuilt(v){
 }
 function tickAge(){
   const ms = parseBuilt(state.built_at);
+  if (SNAPSHOT){   // fixed bake date, not an advancing "N ago"
+    el.age.textContent = ms == null ? '—' : new Date(ms).toLocaleString(undefined,
+      { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return;
+  }
   if (ms == null){ el.age.textContent = state.built_at ? 'snapshot' : '—'; return; }
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
   el.age.textContent = s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`;
@@ -6005,7 +6017,7 @@ function showError(e){
 initCy();
 setAutofit(false);
 loadProjects();
-setInterval(refresh, 2000);   // live: the watcher re-syncs CS, we re-poll
+if (!SNAPSHOT) setInterval(refresh, 2000);   // live: the watcher re-syncs CS, we re-poll (off for a static in-CS snapshot)
 </script>
 </body>
 </html>

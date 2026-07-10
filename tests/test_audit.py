@@ -129,3 +129,20 @@ def test_stale_issues_sorted_by_artifact():
     v = audit.audit_graph(Graph(cs_project_id="p", nodes=(sZ, sA, c)))
     assert v["c"].level == audit.STALE_INPUT
     assert [i.artifact for i in v["c"].stale] == ["a.csv", "z.csv"]
+
+
+def test_graph_response_wire_shape():
+    # the ONE getGraph serializer both the server and the in-CS kernel call: asdict(graph) + a
+    # per-node verdict. Pinning it here is what stops the two surfaces drifting.
+    raw = ref("rv1", "R", 1, 1, True, "raw.csv")
+    xv1 = ref("xv1", "X", 1, 1, True, "x.csv")
+    g = Graph(cs_project_id="p", built_at=1.0,
+              nodes=(node("src", outputs=(raw,), kind="source"),
+                     node("c1", inputs=(raw,), outputs=(xv1,))))
+    resp = audit.graph_response(g)
+    assert set(resp) >= {"cs_project_id", "nodes", "edges", "frames", "built_at"}   # graph keys
+    assert {nd["id"] for nd in resp["nodes"]} == {"src", "c1"}
+    verdicts = audit.audit_graph(g)
+    for nd in resp["nodes"]:
+        assert set(nd["verdict"]) == {"level", "stale", "mixed"}         # Verdict asdict shape
+        assert nd["verdict"]["level"] == verdicts[nd["id"]].level        # matches audit_graph
