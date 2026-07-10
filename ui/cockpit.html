@@ -5927,7 +5927,7 @@ function updateHeader(){
 }
 // In CS the cockpit is a STATIC snapshot (render_cockpit bakes one graph); the skill sets __PG_SNAPSHOT
 // so we present an honest "Snapshot · <bake date>" instead of a pulsing "Live … ago" + a dead 2s poll.
-const SNAPSHOT = !!(typeof window !== 'undefined' && window.__PG_SNAPSHOT);
+const SNAPSHOT = !!window.__PG_SNAPSHOT;
 if (SNAPSHOT){
   const lbl = document.querySelector('.live .lbl'); if (lbl) lbl.textContent = 'Snapshot';
   const box = document.querySelector('.live'); if (box) box.title = 'Static provenance snapshot — not a live poll';

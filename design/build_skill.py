@@ -56,6 +56,7 @@ SKILL_DATA_BLOCK = '''
   window.__PG_GRAPH = GRAPH;     // exposed for the no-bundle fallback below
   window.__PG_SNAPSHOT = true;   // this render is a STATIC snapshot: cockpit shows the bake date, no live poll
   let served = false;
+  // these replace the PG:LOG-wrapped getProjects/getGraph — telemetry is a deliberate no-op in CS (no /api/log)
   getProjects = async () => [PROJECT];
   getGraph = async (pid) => {
     if (pid !== PROJECT.id || served) return null;   // static baked graph: nothing changes after serve #1
@@ -99,7 +100,9 @@ def _skill_cockpit_html() -> str:
     """The in-CS cockpit template, generated from ui/cockpit.html: inlined vendor -> __BUNDLE_SRC__
     marker, plus the PG:SKILL-DATA offline data override and a no-bundle fallback. Same file the
     standalone cockpit ships (toggle, frames, inspector, rail, trace, isolate); render_cockpit fills it."""
-    sys.path.insert(0, str(ROOT / "design"))
+    design_dir = str(ROOT / "design")
+    if design_dir not in sys.path:   # don't accumulate copies across a watch()-loop's rebuilds
+        sys.path.insert(0, design_dir)
     import vendor_libs
     html = vendor_libs.strip_vendor((ROOT / "ui" / "cockpit.html").read_text())
     if "</head>" not in html:
@@ -186,7 +189,9 @@ def _reader():
 
 
 def _current_project():
-    rows = _HostReader().query("SELECT id, name FROM projects LIMIT 1")
+    # ORDER BY so the pick is deterministic if host.query ever hands back >1 project (name is shown in
+    # the cockpit header now); most-recently-updated, matching adapters/external/substrate.list_projects.
+    rows = _HostReader().query("SELECT id, name FROM projects ORDER BY updated_at DESC LIMIT 1")
     if rows:
         return {"id": rows[0]["id"], "name": rows[0].get("name") or rows[0]["id"]}
     return {"id": "current", "name": "current"}
@@ -272,6 +277,8 @@ def render_cockpit():
     resp = graph_response(g)
     # escape EVERY '<' as \\u003c (valid JSON; '<' only appears inside string values). The baked GRAPH is
     # a live JS object literal in an inline <script>; a '</'-only seal misses the <!--<script> double-escape.
+    # chr(92) is a backslash, on purpose: this line is inside the KERNEL_IMPL string, so writing the escape
+    # literally would collapse to a bare '<' in the generated kernel and make seal a no-op.
     seal = lambda s: s.replace("<", chr(92) + "u003c")
     subs = {
         "__BUNDLE_SRC__": marker,   # {{artifact:VID}} marker; cockpit.html stays KB, not an inline bundle
