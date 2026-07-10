@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from typing import Optional
 
 from .model import ArtifactRef, Graph, Node
 
@@ -38,7 +39,7 @@ class VersionIssue:
     artifact: str                    # filename
     artifact_id: str
     versions: tuple[int, ...]        # the mixed set, or the single stale version
-    current: int | None              # the artifact's current version_number
+    current: Optional[int]           # the artifact's current version_number
 
 
 @dataclass(frozen=True, slots=True)

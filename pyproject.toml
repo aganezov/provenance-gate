@@ -29,6 +29,12 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.ruff.lint.per-file-ignores]
+# core + cs_skill are inlined into a Python 3.9 CS skill kernel, so their annotations use Optional,
+# not PEP-604 `X | None` (3.10+). Keep ruff (UP045/UP007) from "modernizing" them back.
+"src/provenance_gate/core/*.py" = ["UP045", "UP007"]
+"src/provenance_gate/adapters/cs_skill/*.py" = ["UP045", "UP007"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
