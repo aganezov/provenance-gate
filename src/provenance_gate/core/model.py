@@ -17,6 +17,7 @@ Two forward-proofing seams (see build-philosophy):
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,15 +26,15 @@ class ArtifactRef:
 
     artifact_version_id: str  # stable CS id — the pin everything hangs off
     artifact_id: str
-    version_number: int | None
+    version_number: Optional[int]
     filename: str
     checksum: str  # sha256; unused now, present so faithfulness drops in later
     storage_path: str
-    parent_version_id: str | None = None  # revision link; keeps "revision != conflict" recoverable
+    parent_version_id: Optional[str] = None  # revision link; keeps revision!=conflict recoverable
     kind: str = "artifact"  # wire discriminator seam (future: "linked_value")
     is_latest: bool = True  # current version of its artifact? drives the stale/mixed-version audit
-    latest_version_id: str | None = None  # the artifact's current version id (self if is_latest)
-    latest_version_number: int | None = None  # its number; UI shows "(current vN)" on stale chips
+    latest_version_id: Optional[str] = None  # the artifact's current version id (self if is_latest)
+    latest_version_number: Optional[int] = None  # its number; UI shows "(current vN)" on chips
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,10 +48,10 @@ class Node:
     input_surface: tuple[ArtifactRef, ...] = ()  # artifacts it consumes
     output_surface: tuple[ArtifactRef, ...] = ()  # artifacts it produces
     # origin → CS (all None on a future merged node):
-    cs_frame_id: str | None = None
-    cs_cell_id: str | None = None
-    cell_index: int | None = None
-    code: str | None = None  # execution_log.source — the analysis, kept for later predicates
+    cs_frame_id: Optional[str] = None
+    cs_cell_id: Optional[str] = None
+    cell_index: Optional[int] = None
+    code: Optional[str] = None  # execution_log.source — the analysis, kept for later predicates
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +62,7 @@ class Edge:
     src_node_id: str
     dst_node_id: str
     via_artifact_version_id: str
-    reference_name: str | None = None  # CS's label on the dependency
+    reference_name: Optional[str] = None  # CS's label on the dependency
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +74,7 @@ class Frame:
 
     id: str  # stable CS frame id
     label: str  # the task message (CS ``frames.task_summary``); shown as the container title
-    parent_frame_id: str | None = None  # frame hierarchy; unused in m0, captured for later nesting
+    parent_frame_id: Optional[str] = None  # frame hierarchy; captured for later nesting
     kind: str = "frame"  # wire discriminator seam
 
 
