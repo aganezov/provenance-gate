@@ -4777,6 +4777,10 @@ module.exports = __WEBPACK_EXTERNAL_MODULE__4__;
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
         Fit <span class="autotag" id="autotag">AUTO</span>
       </button>
+      <button id="btn-orient" title="Graph flow direction — left-to-right / top-to-bottom">
+        <svg id="orient-ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h11"/><path d="M12 7l5 5-5 5"/></svg>
+        <span id="orient-lbl">L→R</span>
+      </button>
       <button id="btn-relayout" title="Restore auto layout (discard moved nodes)">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v4h4"/></svg>
         Relayout
@@ -4914,6 +4918,7 @@ const state = {
   graph: null,
   built_at: null,
   autofit: false,              // graph-level sticky auto-fit (HUD) — off by default
+  orient: 'LR',                // graph flow direction: 'LR' (left→right) | 'TB' (top→bottom)
   autofitFrame: false,         // sticky auto-fit for FRAME selections — off by default, independent
   autofitNode: false,          // sticky auto-fit for NODE/cell selections — off by default, independent
   pendingFit: false,           // request a one-time graph fit on the next layout (project load)
@@ -4950,6 +4955,7 @@ const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValu
 let cy = null;
 
 function cyStyle(){
+  const tb = state.orient === 'TB';
   const edge = cssVar('--edge'), lit = cssVar('--accent');
   return [
     { selector: 'node', style: {
@@ -4963,10 +4969,11 @@ function cyStyle(){
         'padding': 30, 'shape': 'round-rectangle' } },
     { selector: 'edge', style: {
         'width': 1.4, 'line-color': edge, 'curve-style': 'round-taxi',
-        'taxi-direction': 'horizontal', 'taxi-turn': '50%', 'taxi-turn-min-distance': '6px', 'radius': 12,
+        'taxi-direction': tb ? 'vertical' : 'horizontal', 'taxi-turn': '50%', 'taxi-turn-min-distance': '6px', 'radius': 12,
         'target-arrow-shape': 'triangle', 'target-arrow-color': edge, 'arrow-scale': 0.85,
-        'source-endpoint': '50% 0%',      // leave the producer from its right edge (output surface)
-        'target-endpoint': '-50% 0%',     // enter the consumer at its left edge (input surface)
+        // LR: leave producer's right edge → enter consumer's left. TB: leave bottom → enter top.
+        'source-endpoint': tb ? '0% 50%' : '50% 0%',
+        'target-endpoint': tb ? '0% -50%' : '-50% 0%',
         'target-distance-from-node': 2 } },
     { selector: '.faded', style: { 'opacity': 0.22 } },
     { selector: 'edge.lit', style: {
@@ -5150,7 +5157,7 @@ function buildLayout(){
   const g = state.graph;
   const vis = cy.elements(':visible');
   if (cy.edges(':visible').length){
-    return cy.layout({ name: 'dagre', rankDir: 'LR', ranker: 'network-simplex',
+    return cy.layout({ name: 'dagre', rankDir: state.orient, ranker: 'network-simplex',
                        nodeSep: 26, rankSep: 92, edgeSep: 12, animate: false, eles: vis });
   }
   const usedFrames = new Set(state.frames.map(f => f.id));
@@ -5762,8 +5769,7 @@ function showEdgePop(edge, oe){
     const a = state.avMap[e.via_artifact_version_id];
     const file = a ? a.file : (e.reference_name || 'artifact');
     const stale = a && a.latest === false;
-    const cur = (stale && a.lv != null) ? ` (current v${escHtml(a.lv)})` : '';
-    const ver = a ? `v${escHtml(a.ver)}${cur}` : '';
+    const ver = a ? `v${escHtml(a.ver)}${stale ? ` (current v${escHtml(a.lv)})` : ''}` : '';
     const ref = (e.reference_name && a && e.reference_name !== a.file) ? `<span class="ep-ref">as ${escHtml(e.reference_name)}</span>` : '';
     return `<div class="ep-row"><span class="ep-file" title="${escHtml(file)}">${escHtml(file)}</span>`
          + (ver ? `<span class="ep-v${stale ? ' stale' : ''}">${ver}</span>` : '') + ref + `</div>`;
@@ -5832,6 +5838,21 @@ el.btnFit.addEventListener('dblclick', () => {        // double click: toggle st
   if (state.autofit) fitNow(true);
 });
 $('#btn-relayout').addEventListener('click', () => relayout());
+// flow-direction toggle: swap rankDir + edge routing, restyle, relayout & fit
+function syncOrientBtn(){
+  const tb = state.orient === 'TB';
+  document.getElementById('orient-lbl').textContent = tb ? 'T→B' : 'L→R';
+  const ico = document.getElementById('orient-ico');
+  ico.style.transform = tb ? 'rotate(90deg)' : 'none';
+}
+$('#btn-orient').addEventListener('click', () => {
+  state.orient = state.orient === 'LR' ? 'TB' : 'LR';
+  syncOrientBtn();
+  cy.style(cyStyle());                      // re-route edges for the new axis
+  state.pendingFit = true;
+  attachLayoutStop(buildLayout()).run();   // :visible-scoped — respects isolate
+  PG.action('orient', { dir: state.orient });
+});
 $('#btn-isolate').addEventListener('click', () => setIsolate(!state.isolated));
 $('#zoom-in').addEventListener('click', () => { setAutofit(false); cy.zoom({ level: Math.min(2.5, cy.zoom() * 1.2), renderedPosition: { x: el.cyBox.clientWidth / 2, y: el.cyBox.clientHeight / 2 } }); el.zoomPct.textContent = Math.round(cy.zoom() * 100) + '%'; });
 $('#zoom-out').addEventListener('click', () => { setAutofit(false); cy.zoom({ level: Math.max(0.05, cy.zoom() / 1.2), renderedPosition: { x: el.cyBox.clientWidth / 2, y: el.cyBox.clientHeight / 2 } }); el.zoomPct.textContent = Math.round(cy.zoom() * 100) + '%'; });
