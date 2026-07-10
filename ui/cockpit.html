@@ -187,7 +187,10 @@ select#project:focus-visible{ outline:2px solid var(--accent); outline-offset:1p
 
 /* frame bounding container — structural grouping only, no verdict / no trust styling.
    A calm bounding box + a quiet task title; sits behind the node cards. */
-.frame{ position:absolute; left:0; top:0; transform-origin:top left; will-change:transform;
+/* No will-change:transform on the scaled overlays: it caches the layer texture at scale 1 and
+   GPU-stretches it when zoomed past 1× (blurry labels until a repaint). Re-rasterizing per paint
+   keeps text crisp at any zoom; the node/frame counts are small enough that pan stays smooth. */
+.frame{ position:absolute; left:0; top:0; transform-origin:top left;
   border:1px solid var(--border-strong); border-radius:16px;
   background:color-mix(in oklab, var(--ink) 2.6%, transparent);
   box-shadow:inset 0 0 0 100vmax color-mix(in oklab, var(--ink) 1.4%, transparent); }
@@ -260,7 +263,7 @@ html[data-theme="dark"] .frame{ background:color-mix(in oklab, var(--ink) 4%, tr
 .cellrow .cr-chev{ flex:0 0 auto; width:6px; height:6px; border-right:1.4px solid var(--ink-3); border-bottom:1.4px solid var(--ink-3); transform:rotate(-45deg); }
 
 /* node card */
-.node{ position:absolute; left:0; top:0; transform-origin:center center; will-change:transform; }
+.node{ position:absolute; left:0; top:0; transform-origin:center center; }  /* see .frame note re: no will-change */
 .node .ncard{
   position:relative; height:100%;
   background:var(--surface); border:1px solid var(--border); border-radius:10px;
