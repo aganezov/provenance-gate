@@ -38,7 +38,7 @@ def test_host_reader_empty_project(cs_conn):
 
 def test_reader_excludes_skill_render_outputs(cs_conn):
     # in-CS, the skill's own render outputs must not pollute the DAG
-    cs_conn.executemany("INSERT INTO artifacts VALUES(?,?,?)", [
+    cs_conn.executemany("INSERT INTO artifacts(id, project_id, filename) VALUES(?,?,?)", [
         ("a_cockpit", "proj_smoke", "cockpit.html"),
         ("a_bundle", "proj_smoke", "cytoscape-dagre.bundle.min.js"),
     ])
@@ -55,7 +55,8 @@ def test_reader_excludes_skill_render_outputs(cs_conn):
 
 def test_reader_keeps_null_filename(cs_conn):
     # a NULL filename must NOT be excluded by the self-artifact filter (NULL NOT IN (...) is NULL)
-    cs_conn.execute("INSERT INTO artifacts VALUES(?,?,?)", ("a_nul", "proj_smoke", None))
+    cs_conn.execute("INSERT INTO artifacts(id, project_id, filename) VALUES(?,?,?)",
+                    ("a_nul", "proj_smoke", None))
     cs_conn.execute("INSERT INTO artifact_versions VALUES(?,?,?,?,?,?,?,?)",
                     ("v_nul", "a_nul", 1, "c", "p", None, None, None))   # source, NULL filename
     cs_conn.commit()

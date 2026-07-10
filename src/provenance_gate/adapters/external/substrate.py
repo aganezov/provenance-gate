@@ -47,7 +47,8 @@ def fetch_versions(conn: sqlite3.Connection, project_id: str) -> dict[str, dict]
         for r in conn.execute(
             """
             SELECT av.id, av.artifact_id, av.version_number, av.checksum, av.storage_path,
-                   av.parent_version_id, av.producing_cell_id, av.frame_id, a.filename
+                   av.parent_version_id, av.producing_cell_id, av.frame_id, a.filename,
+                   a.latest_version_id
             FROM artifact_versions av
             JOIN artifacts a ON a.id = av.artifact_id
             WHERE a.project_id = ?

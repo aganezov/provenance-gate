@@ -12,7 +12,7 @@ import pytest
 
 SCHEMA = """
 CREATE TABLE projects(id TEXT, name TEXT, updated_at INTEGER);
-CREATE TABLE artifacts(id TEXT, project_id TEXT, filename TEXT);
+CREATE TABLE artifacts(id TEXT, project_id TEXT, filename TEXT, latest_version_id TEXT);
 CREATE TABLE artifact_versions(
     id TEXT, artifact_id TEXT, version_number INTEGER, checksum TEXT, storage_path TEXT,
     parent_version_id TEXT, producing_cell_id TEXT, frame_id TEXT);
@@ -41,11 +41,12 @@ def cs_conn() -> sqlite3.Connection:
         ("c1", "fd041418", 1, "read stats.csv; write note.txt"),
         ("c2", "f2", 0, "read input.csv; write out.csv"),
     ])
-    c.executemany("INSERT INTO artifacts VALUES(?,?,?)", [
-        ("a_stats", "proj_smoke", "stats.csv"),
-        ("a_note", "proj_smoke", "note.txt"),
-        ("a_in", "proj_upload", "input.csv"),
-        ("a_out", "proj_upload", "out.csv"),
+    # latest_version_id = the artifact's authoritative head (here each artifact has one version)
+    c.executemany("INSERT INTO artifacts VALUES(?,?,?,?)", [
+        ("a_stats", "proj_smoke", "stats.csv", "v_stats"),
+        ("a_note", "proj_smoke", "note.txt", "v_note"),
+        ("a_in", "proj_upload", "input.csv", "v_in"),
+        ("a_out", "proj_upload", "out.csv", "v_out"),
     ])
     c.executemany("INSERT INTO artifact_versions VALUES(?,?,?,?,?,?,?,?)", [
         ("v_stats", "a_stats", 1, "219df1", "proj_smoke/a_stats/stats.csv", None, "c0", "fd041418"),
