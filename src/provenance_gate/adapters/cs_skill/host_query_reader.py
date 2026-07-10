@@ -71,7 +71,8 @@ class HostQueryReader:
                 # mirrors substrate.py's fetch_* (kept in sync by hand; the kernel reader must be
                 # import-free / self-contained for inlining)
                 "SELECT av.id, av.artifact_id, av.version_number, av.checksum, av.storage_path, "
-                "av.parent_version_id, av.producing_cell_id, av.frame_id, a.filename "
+                "av.parent_version_id, av.producing_cell_id, av.frame_id, a.filename, "
+                "a.latest_version_id "
                 "FROM artifact_versions av JOIN artifacts a ON a.id = av.artifact_id" + where
             )
         }
