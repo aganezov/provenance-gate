@@ -16,28 +16,32 @@ _spec.loader.exec_module(build_skill)
 
 
 class _FakeSkills:
-    """host.skills stub for render_cockpit: the .html reference carries the placeholder; the bundle
-    is opaque."""
+    """host.skills stub for render_cockpit: the .html reference carries the marker placeholders; the
+    saved-once assets (bundle, app JS) are opaque."""
 
     def read(self, name, path):
-        # stub of the generated full-cockpit template: the bundle marker + the two baked-data slots
-        html = ('<html><head><script src="__BUNDLE_SRC__"></script></head>'
-                '<body><script>window.P=__PROJECT__;window.G=__GRAPH__;</script></body></html>')
-        return {"content": html if path.endswith(".html") else "/*VENDOR*/"}
+        if path.endswith(".html"):  # stub shell: bundle + app-js markers + the two baked-data slots
+            return {"content": '<html><head><script src="__BUNDLE_SRC__"></script></head><body>'
+                    '<script>window.P=__PROJECT__;window.G=__GRAPH__;</script>'
+                    '<script src="__APP_JS_SRC__"></script></body></html>'}
+        return {"content": "/*asset " + path + "*/"}   # bundle or cockpit-app.js
 
 
 class _FakeHost:
     """Stands in for CS's injected ``host``: run the SQL, hand back rows (no project scoping, so the
     kernel's scope_by_host=True reads the whole fixture — both projects)."""
 
-    def __init__(self, conn, bundle_saved=True):
+    def __init__(self, conn, assets_saved=True):
         self.conn = conn
         self.skills = _FakeSkills()
-        self._bundle_saved = bundle_saved
+        self._assets_saved = assets_saved
 
     def query(self, sql, scope=None):
-        if "a.filename = 'cytoscape-dagre.bundle.min.js'" in sql:  # bundle-id lookup
-            return [{"id": "BUNDLE_VID"}] if self._bundle_saved else []
+        # asset-existence lookups (bundle + app js): saved -> a fake version id, else empty
+        if "a.filename = 'cytoscape-dagre.bundle.min.js'" in sql:
+            return [{"id": "BUNDLE_VID"}] if self._assets_saved else []
+        if "a.filename = 'cockpit-app.js'" in sql:
+            return [{"id": "APPJS_VID"}] if self._assets_saved else []
         return self.conn.execute(sql).fetchall()
 
     def artifact_marker(self, vid):
@@ -80,10 +84,11 @@ def test_inlined_kernel_renders_cockpit(cs_conn, tmp_path, monkeypatch):
     assert out["nodes"] == 4 and out["files"] == ["cockpit.html"]
     html = (tmp_path / "cockpit.html").read_text()
     assert "{{artifact:BUNDLE_VID}}" in html      # bundle referenced by artifact marker
+    assert "{{artifact:APPJS_VID}}" in html        # app JS referenced by artifact marker
     assert '"cs_project_id"' in html               # asdict(graph) baked as the /api/graph shape
     assert '"verdict"' in html                     # each node carries its computed verdict
     assert "cell 0" in html                        # a node label present in the baked graph
-    assert "__BUNDLE_SRC__" not in html
+    assert "__BUNDLE_SRC__" not in html and "__APP_JS_SRC__" not in html
     assert "__GRAPH__" not in html and "__PROJECT__" not in html
 
 
@@ -106,25 +111,27 @@ def test_cockpit_escapes_every_lt_in_baked_json(cs_conn, tmp_path, monkeypatch):
 
 def test_generated_full_template_structure():
     # Exercise the REAL _skill_cockpit_html (not the stub): vendor stripped to the __BUNDLE_SRC__
-    # marker, PG:SKILL-DATA override + fallback injected in order, snapshot on, lean placeholders
-    # gone. Backstops the transform the render tests stub out.
-    html = build_skill._skill_cockpit_html()
-    assert "PG:VENDOR" not in html                                   # inlined vendor stripped
-    assert html.count('<script src="__BUNDLE_SRC__">') == 1          # bundle marker inserted once
-    assert html.count("__GRAPH__") == 1 and html.count("__PROJECT__") == 1
-    assert "__ELEMENTS__" not in html and "__NODELIST__" not in html  # lean placeholders gone
-    assert "PG:SKILL-DATA" in html and "pg-skill-fallback" in html
-    assert "window.__PG_SNAPSHOT" in html                            # snapshot mode activated in-CS
-    # injection ORDER: bundle marker in <head>, data override after PG:LOG, fallback before </body>
-    i_marker, i_data, i_fb = (html.index("__BUNDLE_SRC__"), html.index("PG:SKILL-DATA"),
-                              html.index("pg-skill-fallback"))
-    assert i_marker < i_data < i_fb
+    # marker, CSS pulled out of the shell into app_js, PG:SKILL-DATA + fallback injected in order,
+    # snapshot on. Backstops the transform the render tests stub out.
+    shell, app_js = build_skill._skill_cockpit_html()
+    assert "PG:VENDOR" not in shell                                  # inlined vendor stripped
+    assert shell.count('<script src="__BUNDLE_SRC__">') == 1         # bundle marker inserted once
+    assert shell.count('<script src="__APP_JS_SRC__">') == 1         # app-js marker inserted once
+    assert shell.count("__GRAPH__") == 1 and shell.count("__PROJECT__") == 1
+    assert "app CSS is injected by cockpit-app.js" in shell         # <style> pulled from the shell
+    assert "PG:SKILL-DATA" in shell and "pg-skill-fallback" in shell
+    assert "window.__PG_SNAPSHOT" in shell                          # snapshot mode activated in-CS
+    # order: bundle marker in <head>, data before the app-js marker, fallback before </body>
+    assert (shell.index("__BUNDLE_SRC__") < shell.index("PG:SKILL-DATA")
+            < shell.index("__APP_JS_SRC__") < shell.index("pg-skill-fallback"))
+    # app_js carries the CSS (injected as a <style> on load) + the real app (PG:DATA-IO)
+    assert "document.createElement('style')" in app_js and "PG:DATA-IO" in app_js
 
 
 def test_render_outputs_are_all_excluded(cs_conn, tmp_path, monkeypatch):
     # drift guard: every file render_cockpit save_artifacts must be one the reader self-excludes
     from provenance_gate.adapters.cs_skill.host_query_reader import SELF_ARTIFACTS
     monkeypatch.chdir(tmp_path)
-    first = _exec_kernel(_FakeHost(cs_conn, bundle_saved=False))["render_cockpit"]()  # bundle
-    second = _exec_kernel(_FakeHost(cs_conn, bundle_saved=True))["render_cockpit"]()  # cockpit.html
+    first = _exec_kernel(_FakeHost(cs_conn, assets_saved=False))["render_cockpit"]()   # unsaved
+    second = _exec_kernel(_FakeHost(cs_conn, assets_saved=True))["render_cockpit"]()
     assert set(first["files"]) | set(second["files"]) == set(SELF_ARTIFACTS)

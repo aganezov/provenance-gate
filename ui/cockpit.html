@@ -4825,14 +4825,24 @@ module.exports = __WEBPACK_EXTERNAL_MODULE__4__;
 
 <script>
 // ===== PG:DATA-IO — the frozen read-only API contract. Do NOT rename, restyle, or remove. =====
-// The gate serves this file live; getProjects()/getGraph() hit the real API on our server.
-// getGraph sends its last-seen version (?v=built_at); the server returns a tiny {unchanged:true} when the
-// graph hasn't changed, and getGraph returns null then so the 2s poll skips its re-render. Offline (Claude
-// Design's sandbox), design/build_mock.py injects a PG:MOCK block just below that serves baked fixtures.
+// The gate serves this file live; getProjects()/getGraph() hit the real API on our server. A BAKED
+// SNAPSHOT (the in-CS skill's PG:SKILL-DATA) instead injects window.__PG_PROJECT / window.__PG_GRAPH,
+// served here directly with no fetch — this is the data-provider seam that lets the app JS be an external
+// saved-once artifact. getGraph sends its last-seen version (?v=built_at); the server returns
+// {unchanged:true} when nothing changed, and getGraph returns null then so the 2s poll skips its render.
+// Offline (Claude Design's sandbox), design/build_mock.py injects a PG:MOCK block just below that
+// reassigns getProjects/getGraph to serve baked fixtures.
 async function _json(url) { const r = await fetch(url); if (!r.ok) throw new Error(`${url} -> ${r.status}`); return r.json(); }
-let getProjects = () => _json("/api/projects");
+let getProjects = () => window.__PG_PROJECT ? Promise.resolve([window.__PG_PROJECT]) : _json("/api/projects");
 const _versions = {};  // last-seen graph version per project (built_at), for the conditional poll
+let _bakedServed = false;  // a baked snapshot is served once, then getGraph returns null (no re-layout)
 let getGraph = async (pid) => {
+  if (window.__PG_GRAPH) {   // static snapshot injected by the shell — no server to poll
+    if (_bakedServed) return null;                                        // served the one baked graph already
+    if (window.__PG_PROJECT && pid !== window.__PG_PROJECT.id) return null;  // (both globals are set together)
+    _bakedServed = true;
+    return window.__PG_GRAPH;
+  }
   const g = await _json(`/api/graph?project=${encodeURIComponent(pid)}&v=${_versions[pid] || ""}`);
   if (g && g.unchanged) return null;           // server: nothing changed since our version -> skip render
   if (g) _versions[pid] = g.built_at;
