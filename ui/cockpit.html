@@ -4838,7 +4838,8 @@ const _versions = {};  // last-seen graph version per project (built_at), for th
 let _bakedServed = false;  // a baked snapshot is served once, then getGraph returns null (no re-layout)
 let getGraph = async (pid) => {
   if (window.__PG_GRAPH) {   // static snapshot injected by the shell — no server to poll
-    if (_bakedServed || (window.__PG_PROJECT && pid !== window.__PG_PROJECT.id)) return null;
+    if (_bakedServed) return null;                                        // served the one baked graph already
+    if (window.__PG_PROJECT && pid !== window.__PG_PROJECT.id) return null;  // (both globals are set together)
     _bakedServed = true;
     return window.__PG_GRAPH;
   }

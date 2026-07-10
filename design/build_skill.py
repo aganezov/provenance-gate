@@ -273,10 +273,11 @@ def render_cockpit():
     assets = [("cytoscape-dagre.bundle.min.js", "__BUNDLE_SRC__"),
               ("cockpit-app.js", "__APP_JS_SRC__")]
     subs, unsaved = {}, []
+    reader = _HostReader()   # stateless; one instance for the whole asset loop
     for filename, placeholder in assets:
-        rows = _HostReader().query(
+        rows = reader.query(
             "SELECT v.id FROM artifact_versions v JOIN artifacts a ON a.id = v.artifact_id "
-            "WHERE a.filename = '" + filename + "' ORDER BY v.version_number DESC")
+            "WHERE a.filename = '" + _esc(filename) + "' ORDER BY v.version_number DESC")
         if rows:
             subs[placeholder] = host.artifact_marker(rows[0]["id"])   # {{artifact:VID}} -> served URL
         else:
