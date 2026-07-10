@@ -22,7 +22,7 @@ Entry points:
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Optional
 
 from .model import ArtifactRef, Graph, Node
@@ -155,6 +155,17 @@ def audit_graph(graph: Graph) -> dict[str, Verdict]:
     deps = _deps(graph, producer_of)
     out_cones = _out_cones(graph, deps)
     return {n.id: _verdict(n, _in_cone(out_cones, deps[n.id]), ref_of) for n in graph.nodes}
+
+
+def graph_response(graph: Graph) -> dict:
+    """The ``getGraph`` wire shape both surfaces serve: ``asdict(graph)`` + each node's ``verdict``.
+    The ONE authoritative serializer — server + in-CS kernel both call it, so the JSON the cockpit
+    consumes can't drift between them."""
+    resp = asdict(graph)
+    verdicts = audit_graph(graph)
+    for nd in resp["nodes"]:
+        nd["verdict"] = asdict(verdicts[nd["id"]])
+    return resp
 
 
 def audit_inputs(graph: Graph, input_version_ids: list[str]) -> Verdict:

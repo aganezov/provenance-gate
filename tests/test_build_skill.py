@@ -20,8 +20,9 @@ class _FakeSkills:
     is opaque."""
 
     def read(self, name, path):
-        html = ('<html><script src="__BUNDLE_SRC__"></script>'
-                '__ELEMENTS__<ul>__NODELIST__</ul></html>')
+        # stub of the generated full-cockpit template: the bundle marker + the two baked-data slots
+        html = ('<html><head><script src="__BUNDLE_SRC__"></script></head>'
+                '<body><script>window.P=__PROJECT__;window.G=__GRAPH__;</script></body></html>')
         return {"content": html if path.endswith(".html") else "/*VENDOR*/"}
 
 
@@ -78,18 +79,20 @@ def test_inlined_kernel_renders_cockpit(cs_conn, tmp_path, monkeypatch):
     out = ns["render_cockpit"]()
     assert out["nodes"] == 4 and out["files"] == ["cockpit.html"]
     html = (tmp_path / "cockpit.html").read_text()
-    assert "{{artifact:BUNDLE_VID}}" in html    # bundle referenced by artifact marker
-    assert '"source":' in html                   # cytoscape elements (edges) baked in
-    assert "cell 0" in html                       # static node-list fallback (no JS)
+    assert "{{artifact:BUNDLE_VID}}" in html      # bundle referenced by artifact marker
+    assert '"cs_project_id"' in html               # asdict(graph) baked as the /api/graph shape
+    assert '"verdict"' in html                     # each node carries its computed verdict
+    assert "cell 0" in html                        # a node label present in the baked graph
     assert "__BUNDLE_SRC__" not in html
-    assert "__ELEMENTS__" not in html and "__NODELIST__" not in html
+    assert "__GRAPH__" not in html and "__PROJECT__" not in html
 
 
-def test_cockpit_escapes_and_isolates_injected_filenames(cs_conn, tmp_path, monkeypatch):
-    # a hostile filename must neither terminate the inline <script> ('<' escaped) nor collide with a
-    # template placeholder (single-pass fill). Add a source artifact with such a name.
+def test_cockpit_escapes_every_lt_in_baked_json(cs_conn, tmp_path, monkeypatch):
+    # EVERY '<' in a baked value must become < so no raw '<' can form an HTML tag inside the inline
+    # <script> holding GRAPH: covers </script> AND the <!--<script> double-escape a '</'-only seal
+    # misses (the regression both reviews caught). Add a source artifact with such a name.
     cs_conn.execute("INSERT INTO artifacts(id, project_id, filename) VALUES(?,?,?)",
-                    ("a_x", "proj_smoke", "</script>__NODELIST__x.csv"))
+                    ("a_x", "proj_smoke", "<!--<script>evil.csv"))
     cs_conn.execute("INSERT INTO artifact_versions VALUES(?,?,?,?,?,?,?,?)",
                     ("v_x", "a_x", 1, "c", "p", None, None, None))   # a source (no producing cell)
     cs_conn.commit()
@@ -97,8 +100,25 @@ def test_cockpit_escapes_and_isolates_injected_filenames(cs_conn, tmp_path, monk
     ns = _exec_kernel(_FakeHost(cs_conn))
     ns["render_cockpit"]()
     html = (tmp_path / "cockpit.html").read_text()
-    assert "</script>__NODELIST__x" not in html   # '<' escaped -> the raw closing tag never appears
-    assert "__NODELIST__x.csv" in html            # the label survived the __NODELIST__ substitution
+    assert "<!--<script>evil" not in html and "<script>evil" not in html   # no raw '<' survives
+    assert "\\u003c!--\\u003cscript>evil.csv" in html   # sealed form, name intact
+
+
+def test_generated_full_template_structure():
+    # Exercise the REAL _skill_cockpit_html (not the stub): vendor stripped to the __BUNDLE_SRC__
+    # marker, PG:SKILL-DATA override + fallback injected in order, snapshot on, lean placeholders
+    # gone. Backstops the transform the render tests stub out.
+    html = build_skill._skill_cockpit_html()
+    assert "PG:VENDOR" not in html                                   # inlined vendor stripped
+    assert html.count('<script src="__BUNDLE_SRC__">') == 1          # bundle marker inserted once
+    assert html.count("__GRAPH__") == 1 and html.count("__PROJECT__") == 1
+    assert "__ELEMENTS__" not in html and "__NODELIST__" not in html  # lean placeholders gone
+    assert "PG:SKILL-DATA" in html and "pg-skill-fallback" in html
+    assert "window.__PG_SNAPSHOT" in html                            # snapshot mode activated in-CS
+    # injection ORDER: bundle marker in <head>, data override after PG:LOG, fallback before </body>
+    i_marker, i_data, i_fb = (html.index("__BUNDLE_SRC__"), html.index("PG:SKILL-DATA"),
+                              html.index("pg-skill-fallback"))
+    assert i_marker < i_data < i_fb
 
 
 def test_render_outputs_are_all_excluded(cs_conn, tmp_path, monkeypatch):
