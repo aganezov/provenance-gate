@@ -4918,7 +4918,8 @@ const state = {
   graph: null,
   built_at: null,
   autofit: false,              // graph-level sticky auto-fit (HUD) — off by default
-  orient: 'LR',                // graph flow direction: 'LR' (left→right) | 'TB' (top→bottom)
+  orient: 'LR',                // graph flow axis 'LR'|'TB'; sticky across project loads (deliberate: it's a
+                               // viewing pref — the CS viewer isn't full-screen, so the chosen axis should stay)
   autofitFrame: false,         // sticky auto-fit for FRAME selections — off by default, independent
   autofitNode: false,          // sticky auto-fit for NODE/cell selections — off by default, independent
   pendingFit: false,           // request a one-time graph fit on the next layout (project load)
@@ -5769,7 +5770,8 @@ function showEdgePop(edge, oe){
     const a = state.avMap[e.via_artifact_version_id];
     const file = a ? a.file : (e.reference_name || 'artifact');
     const stale = a && a.latest === false;
-    const ver = a ? `v${escHtml(a.ver)}${stale ? ` (current v${escHtml(a.lv)})` : ''}` : '';
+    const cur = (stale && a.lv != null) ? ` (current v${escHtml(a.lv)})` : '';
+    const ver = a ? `v${escHtml(a.ver)}${cur}` : '';
     const ref = (e.reference_name && a && e.reference_name !== a.file) ? `<span class="ep-ref">as ${escHtml(e.reference_name)}</span>` : '';
     return `<div class="ep-row"><span class="ep-file" title="${escHtml(file)}">${escHtml(file)}</span>`
          + (ver ? `<span class="ep-v${stale ? ' stale' : ''}">${ver}</span>` : '') + ref + `</div>`;
