@@ -27,17 +27,22 @@ def _latest_by_artifact(versions: dict[str, dict]) -> dict[str, dict]:
     """Per artifact_id, the version record CS treats as current. Prefer the **authoritative**
     ``artifacts.latest_version_id`` each row carries (the field CS itself advances on a re-run and
     can repoint on a rollback) — that's the only way currency stays correct when the head isn't the
-    highest-numbered row. Fall back to ``max(version_number)`` only when that head id is absent or
-    points outside the fetched set (e.g. an older/filtered head we didn't load). Fallback ties
-    (equal or NULL ``version_number``) break on the higher version id — a stable order, so
-    ``is_latest`` stays stable across derives of the same CS state."""
+    highest-numbered row. Fall back to ``max(version_number)`` only when that head id is absent,
+    points outside the fetched set, or points to another artifact (a bad FK we won't trust).
+    Fallback ties (equal or NULL ``version_number``) break on the higher version id — a stable
+    order, so ``is_latest`` stays stable across derives of the same CS state."""
     latest: dict[str, dict] = {}
     authoritative: set[str] = set()
+    # authoritative head per artifact = the record latest_version_id points to, when it resolves
+    # within the fetched set AND belongs to this artifact (guards a dangling / cross-artifact FK)
     for v in versions.values():
-        head_id = v.get("latest_version_id")
-        if head_id is not None and head_id in versions:
-            latest[v["artifact_id"]] = versions[head_id]  # CS's own head, resolvable in this set
-            authoritative.add(v["artifact_id"])
+        aid = v["artifact_id"]
+        if aid in authoritative:
+            continue
+        head = versions.get(v.get("latest_version_id") or "")
+        if head is not None and head["artifact_id"] == aid:
+            latest[aid] = head
+            authoritative.add(aid)
     for v in versions.values():
         aid = v["artifact_id"]
         if aid in authoritative:

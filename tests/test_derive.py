@@ -116,6 +116,23 @@ def test_derive_falls_back_to_max_when_authoritative_head_unresolvable():
         assert a.latest_version_id == "vx2" and a.latest_version_number == 2
 
 
+def test_derive_ignores_cross_artifact_head():
+    # a dangling / wrong-artifact latest_version_id (a CS FK anomaly) must NOT set another
+    # artifact's version as this one's head — fall back to max rather than corrupt currency.
+    versions = _two_versions("v_other")   # a_x's rows point their head at a DIFFERENT artifact
+    versions["v_other"] = {"id": "v_other", "artifact_id": "a_other", "version_number": 9,
+                           "checksum": "o", "storage_path": "p/o", "parent_version_id": None,
+                           "producing_cell_id": "c3", "frame_id": None, "filename": "o.csv",
+                           "latest_version_id": "v_other"}
+    cells = dict(_TWO_CELLS, c3={"id": "c3", "frame_id": None, "cell_index": 3, "source": "s3"})
+    g = derive.derive_graph("proj_x", versions, [], cells, [], built_at=1.0)
+    refs = {a.artifact_version_id: a for n in g.nodes for a in n.output_surface}
+    # a_x's cross-artifact head is rejected -> fall back to max (vx2 current), not v_other
+    assert refs["vx1"].is_latest is False and refs["vx2"].is_latest is True
+    assert refs["vx1"].latest_version_id == "vx2" and refs["vx2"].latest_version_id == "vx2"
+    assert refs["v_other"].is_latest is True   # a_other's own head is honored (same artifact)
+
+
 def test_derive_latest_tiebreak_is_deterministic():
     # two versions of one artifact tied on version_number: the higher version id wins, stably,
     # regardless of scan/insertion order — so is_latest can't flip across derives (determinism).
