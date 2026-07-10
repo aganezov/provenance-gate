@@ -4967,7 +4967,8 @@ function cyStyle(){
     // the compound graph, and to receive taps on empty frame area (→ select frame).
     { selector: ':parent', style: {
         'background-opacity': 0, 'border-width': 0,
-        'padding': 30, 'shape': 'round-rectangle' } },
+        // tight uniform inset for L/R/B; syncOverlay adds a top band back for the frame title
+        'padding': 16, 'shape': 'round-rectangle' } },
     { selector: 'edge', style: {
         'width': 1.4, 'line-color': edge, 'curve-style': 'round-taxi',
         'taxi-direction': tb ? 'vertical' : 'horizontal', 'taxi-turn': '50%', 'taxi-turn-min-distance': '6px', 'radius': 12,
@@ -5086,9 +5087,12 @@ function syncOverlay(){
       const bb = node.boundingBox({ includeLabels: false });
       const rbb = node.renderedBoundingBox({ includeLabels: false });
       fe.style.display = node.visible() ? '' : 'none';
+      // :parent padding is a tight uniform 16 (L/R/B); grow the box up by a top band so the
+      // frame-head title keeps its room without fattening the other three sides.
+      const TOP_EXTRA = 14;
       fe.style.width = bb.w + 'px';
-      fe.style.height = bb.h + 'px';
-      fe.style.transform = `translate(${rbb.x1}px,${rbb.y1}px) scale(${z})`;
+      fe.style.height = (bb.h + TOP_EXTRA) + 'px';
+      fe.style.transform = `translate(${rbb.x1}px,${rbb.y1 - TOP_EXTRA * z}px) scale(${z})`;
     }
   }
 }
@@ -5159,7 +5163,7 @@ function buildLayout(){
   const vis = cy.elements(':visible');
   if (cy.edges(':visible').length){
     return cy.layout({ name: 'dagre', rankDir: state.orient, ranker: 'network-simplex',
-                       nodeSep: 26, rankSep: 92, edgeSep: 12, animate: false, eles: vis });
+                       nodeSep: 34, rankSep: 92, edgeSep: 12, animate: false, eles: vis });
   }
   const usedFrames = new Set(state.frames.map(f => f.id));
   const groups = new Map();                 // frame id (or '__none') -> [node ids], framed first
