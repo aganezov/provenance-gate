@@ -43,7 +43,7 @@ def _in(ids) -> str:
 # The skill's OWN render outputs (render_cockpit writes + save_artifacts these). Excluded from every
 # graph so the cockpit shows the user's science, not its own plumbing. Kept in sync with what
 # render_cockpit saves by a drift test (test_render_outputs_are_all_excluded).
-SELF_ARTIFACTS = ("cockpit.html", "cytoscape-dagre.bundle.min.js")
+SELF_ARTIFACTS = ("cockpit.html", "cytoscape-dagre.bundle.min.js", "cockpit-app.js")
 
 
 class HostQueryReader:
