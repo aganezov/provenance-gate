@@ -16,7 +16,6 @@ to ``POST /api/log``. Run: ``uv run pg-serve`` (external surface entrypoint).
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import glob
 import json
 import os
@@ -121,11 +120,9 @@ class Handler(BaseHTTPRequestHandler):
             # built_at advances only on a real change; plain 200, no cache quirks.
             if _same_version(parse_qs(u.query).get("v", [""])[0], g.built_at):
                 return self._json({"unchanged": True, "built_at": g.built_at})
-            resp = dataclasses.asdict(g)
-            verdicts = audit.audit_graph(g)  # computed per read, never stored
-            for nd in resp["nodes"]:
-                nd["verdict"] = dataclasses.asdict(verdicts[nd["id"]])
-            return self._json(resp)
+            # the ONE authoritative getGraph serializer (core.audit.graph_response), shared verbatim
+            # with the in-CS skill kernel so the two surfaces can't drift.
+            return self._json(audit.graph_response(g))
         self._json({"error": "not found"}, 404)
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
