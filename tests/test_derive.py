@@ -58,7 +58,8 @@ def test_derive_empty_when_no_versions():
 
 
 def test_derive_flags_latest_version():
-    # two versions of the same artifact (a_x): v1 is stale, v2 is current
+    # two versions of the same artifact (a_x), NO latest_version_id on the records -> currency
+    # falls back to max(version_number): v1 is stale, v2 is current.
     versions = {
         "vx1": {"id": "vx1", "artifact_id": "a_x", "version_number": 1, "checksum": "1",
                 "storage_path": "p/x1", "parent_version_id": None,
@@ -73,6 +74,44 @@ def test_derive_flags_latest_version():
     refs = {a.artifact_version_id: a for n in g.nodes for a in n.output_surface}
     assert refs["vx1"].is_latest is False and refs["vx2"].is_latest is True  # max version_number
     # every ref points at the artifact's current version (vx2, v2) — the UI's "(current vN)" chip
+    for a in refs.values():
+        assert a.latest_version_id == "vx2" and a.latest_version_number == 2
+
+
+def _two_versions(head_id):
+    # a_x with v1 (num 1) and v2 (num 2); both rows carry the artifact's head id (as CS's join does)
+    return {
+        "vx1": {"id": "vx1", "artifact_id": "a_x", "version_number": 1, "checksum": "1",
+                "storage_path": "p/x1", "parent_version_id": None, "producing_cell_id": "c1",
+                "frame_id": None, "filename": "x.csv", "latest_version_id": head_id},
+        "vx2": {"id": "vx2", "artifact_id": "a_x", "version_number": 2, "checksum": "2",
+                "storage_path": "p/x2", "parent_version_id": "vx1", "producing_cell_id": "c2",
+                "frame_id": None, "filename": "x.csv", "latest_version_id": head_id},
+    }
+
+
+_TWO_CELLS = {"c1": {"id": "c1", "frame_id": None, "cell_index": 1, "source": "s1"},
+              "c2": {"id": "c2", "frame_id": None, "cell_index": 2, "source": "s2"}}
+
+
+def test_derive_prefers_authoritative_latest_over_max():
+    # CS's authoritative head (artifacts.latest_version_id) can point at a NON-highest-numbered
+    # version — a rollback/repoint. Currency must follow that head, not max(version_number): here
+    # the head is vx1 (older), so the higher-numbered vx2 is NOT current (would be STALE_INPUT).
+    g = derive.derive_graph("proj_x", _two_versions("vx1"), [], _TWO_CELLS, [], built_at=1.0)
+    refs = {a.artifact_version_id: a for n in g.nodes for a in n.output_surface}
+    assert refs["vx1"].is_latest is True and refs["vx2"].is_latest is False   # authoritative wins
+    for a in refs.values():
+        assert a.latest_version_id == "vx1" and a.latest_version_number == 1
+
+
+def test_derive_falls_back_to_max_when_authoritative_head_unresolvable():
+    # latest_version_id points outside the fetched set (an older/filtered head we didn't load) —
+    # fall back to max(version_number) rather than dropping currency for the artifact entirely.
+    g = derive.derive_graph("proj_x", _two_versions("vx_not_fetched"), [], _TWO_CELLS, [],
+                            built_at=1.0)
+    refs = {a.artifact_version_id: a for n in g.nodes for a in n.output_surface}
+    assert refs["vx1"].is_latest is False and refs["vx2"].is_latest is True   # max fallback
     for a in refs.values():
         assert a.latest_version_id == "vx2" and a.latest_version_number == 2
 

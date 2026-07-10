@@ -88,7 +88,7 @@ def test_inlined_kernel_renders_cockpit(cs_conn, tmp_path, monkeypatch):
 def test_cockpit_escapes_and_isolates_injected_filenames(cs_conn, tmp_path, monkeypatch):
     # a hostile filename must neither terminate the inline <script> ('<' escaped) nor collide with a
     # template placeholder (single-pass fill). Add a source artifact with such a name.
-    cs_conn.execute("INSERT INTO artifacts VALUES(?,?,?)",
+    cs_conn.execute("INSERT INTO artifacts(id, project_id, filename) VALUES(?,?,?)",
                     ("a_x", "proj_smoke", "</script>__NODELIST__x.csv"))
     cs_conn.execute("INSERT INTO artifact_versions VALUES(?,?,?,?,?,?,?,?)",
                     ("v_x", "a_x", 1, "c", "p", None, None, None))   # a source (no producing cell)

@@ -7,7 +7,8 @@ long as they supply the same records.
 
 Record contract each GraphReader adapter must satisfy (dict keys):
   version : id, artifact_id, version_number, checksum, storage_path, parent_version_id,
-            producing_cell_id, frame_id, filename
+            producing_cell_id, frame_id, filename, latest_version_id (authoritative head; optional
+            — absent/unresolvable falls back to max version_number)
   dep     : consumer_v, input_v, reference_name
   cell    : id, frame_id, cell_index, source
   frame   : id, task_summary, name, parent_frame_id
@@ -23,18 +24,29 @@ from .model import ArtifactRef, Edge, Frame, Graph, Node
 
 
 def _latest_by_artifact(versions: dict[str, dict]) -> dict[str, dict]:
-    """Per artifact_id, the version record with the highest ``version_number``. CS bumps it each
-    re-run, so the max is the current version. (Adapters may later inject CS's authoritative
-    ``artifacts.latest_version_id``; the audit/UI only need "which version is current".)
-    Ties (equal or NULL ``version_number``) break on the higher version id — a stable order, so
+    """Per artifact_id, the version record CS treats as current. Prefer the **authoritative**
+    ``artifacts.latest_version_id`` each row carries (the field CS itself advances on a re-run and
+    can repoint on a rollback) — that's the only way currency stays correct when the head isn't the
+    highest-numbered row. Fall back to ``max(version_number)`` only when that head id is absent or
+    points outside the fetched set (e.g. an older/filtered head we didn't load). Fallback ties
+    (equal or NULL ``version_number``) break on the higher version id — a stable order, so
     ``is_latest`` stays stable across derives of the same CS state."""
     latest: dict[str, dict] = {}
+    authoritative: set[str] = set()
     for v in versions.values():
-        cur = latest.get(v["artifact_id"])
+        head_id = v.get("latest_version_id")
+        if head_id is not None and head_id in versions:
+            latest[v["artifact_id"]] = versions[head_id]  # CS's own head, resolvable in this set
+            authoritative.add(v["artifact_id"])
+    for v in versions.values():
+        aid = v["artifact_id"]
+        if aid in authoritative:
+            continue
+        cur = latest.get(aid)
         v_num = v["version_number"] or 0
         cur_num = (cur["version_number"] or 0) if cur is not None else -1
         if cur is None or v_num > cur_num or (v_num == cur_num and v["id"] > cur["id"]):
-            latest[v["artifact_id"]] = v
+            latest[aid] = v
     return latest
 
 
