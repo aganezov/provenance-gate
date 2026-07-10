@@ -18,6 +18,13 @@
   .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
   #detail { margin-top: 8px; padding-top: 8px; border-top: 1px solid #262b35; color: #cfd4dc; min-height: 1.3em; }
   #status { color: #7f8794; font-size: 11px; margin-top: 6px; }
+  /* flow-direction toggle: a compact pill over the canvas (CS viewer isn't full-screen, so orientation matters) */
+  #orient {
+    position: fixed; top: 14px; right: 14px; z-index: 5; display: none;
+    font: 12px system-ui, sans-serif; color: #cfd4dc; cursor: pointer;
+    background: rgba(26,29,36,.86); border: 1px solid #262b35; border-radius: 8px; padding: 6px 11px;
+  }
+  #orient:hover { border-color: #3a4150; color: #e8eaed; }
   /* static fallback: rendered server-side, always visible unless cytoscape upgrades it */
   #fallback { padding: 74px 20px 24px; max-width: 720px; margin: 0 auto; }
   #fallback h2 { margin: 0 0 6px; font-size: 16px; }
@@ -47,6 +54,8 @@
   </div>
 
   <div id="cy"></div>
+  <!-- initial label matches the JS toggle's LR text (kept in sync, not decorative) -->
+  <button id="orient" title="Graph flow direction — left→right / top→bottom">→ L→R</button>
 
   <script>
     (function () {
@@ -66,13 +75,26 @@
                 'target-arrow-shape': 'triangle', 'arrow-scale': 0.9, 'curve-style': 'bezier' } }
           ]
         });
-        try { cy.layout({ name: 'dagre', rankDir: 'LR', nodeSep: 36, rankSep: 68 }).run(); }
-        catch (e) { cy.layout({ name: 'grid' }).run(); status.textContent = 'dagre unavailable — grid layout'; }
-        cy.fit(undefined, 50);
-        if (cy.zoom() > 1.4) { cy.zoom(1.4); cy.center(); }
+        var orient = 'LR';   // graph flow direction: 'LR' (left→right) | 'TB' (top→bottom)
+        function runLayout() {
+          try { cy.layout({ name: 'dagre', rankDir: orient, nodeSep: 36, rankSep: 68 }).run(); }
+          catch (e) { cy.layout({ name: 'grid' }).run(); status.textContent = 'dagre unavailable — grid layout'; }
+          cy.fit(undefined, 50);
+          if (cy.zoom() > 1.4) { cy.zoom(1.4); cy.center(); }
+        }
+        runLayout();
         cy.on('tap', 'node', function (e) {
           var d = e.target.data();
           document.getElementById('detail').textContent = d.label + ' — ' + (d.detail || 'clean');
+        });
+        // flow-direction toggle: flip rankDir + relayout & refit. Bezier edges adapt to the new
+        // axis on their own (no endpoint re-routing, unlike the taxi-edged standalone cockpit).
+        var orientBtn = document.getElementById('orient');
+        orientBtn.style.display = 'block';
+        orientBtn.addEventListener('click', function () {
+          orient = orient === 'LR' ? 'TB' : 'LR';
+          orientBtn.textContent = orient === 'TB' ? '↓ T→B' : '→ L→R';
+          runLayout();
         });
         document.getElementById('fallback').style.display = 'none';
         document.getElementById('cy').style.display = 'block';

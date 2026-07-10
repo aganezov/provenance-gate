@@ -187,11 +187,16 @@ select#project:focus-visible{ outline:2px solid var(--accent); outline-offset:1p
 
 /* frame bounding container — structural grouping only, no verdict / no trust styling.
    A calm bounding box + a quiet task title; sits behind the node cards. */
-.frame{ position:absolute; left:0; top:0; transform-origin:top left; will-change:transform;
+/* No will-change:transform on the scaled overlays: it caches the layer texture at scale 1 and
+   GPU-stretches it when zoomed past 1× (blurry labels until a repaint). Re-rasterizing per paint
+   keeps text crisp at any zoom; the node/frame counts are small enough that pan stays smooth. */
+.frame{ position:absolute; left:0; top:0; transform-origin:top left;
   border:1px solid var(--border-strong); border-radius:16px;
   background:color-mix(in oklab, var(--ink) 2.6%, transparent);
   box-shadow:inset 0 0 0 100vmax color-mix(in oklab, var(--ink) 1.4%, transparent); }
 html[data-theme="dark"] .frame{ background:color-mix(in oklab, var(--ink) 4%, transparent); }
+/* top:9px must stay < TOP_EXTRA (14) in syncOverlay's frame-box top band — else the title clips
+   out of the frame (top > TOP_EXTRA) or spills into the node content. Keep the two in sync. */
 .frame-head{ position:absolute; left:16px; right:16px; top:9px; display:flex; align-items:baseline; gap:.5rem;
   pointer-events:auto; cursor:pointer; }
 .frame-head:hover .frame-title{ color:var(--ink); }
@@ -260,7 +265,7 @@ html[data-theme="dark"] .frame{ background:color-mix(in oklab, var(--ink) 4%, tr
 .cellrow .cr-chev{ flex:0 0 auto; width:6px; height:6px; border-right:1.4px solid var(--ink-3); border-bottom:1.4px solid var(--ink-3); transform:rotate(-45deg); }
 
 /* node card */
-.node{ position:absolute; left:0; top:0; transform-origin:center center; will-change:transform; }
+.node{ position:absolute; left:0; top:0; transform-origin:center center; }  /* see .frame note re: no will-change */
 .node .ncard{
   position:relative; height:100%;
   background:var(--surface); border:1px solid var(--border); border-radius:10px;
@@ -4777,6 +4782,10 @@ module.exports = __WEBPACK_EXTERNAL_MODULE__4__;
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
         Fit <span class="autotag" id="autotag">AUTO</span>
       </button>
+      <button id="btn-orient" title="Graph flow direction — left-to-right / top-to-bottom">
+        <svg id="orient-ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h11"/><path d="M12 7l5 5-5 5"/></svg>
+        <span id="orient-lbl">L→R</span>
+      </button>
       <button id="btn-relayout" title="Restore auto layout (discard moved nodes)">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v4h4"/></svg>
         Relayout
@@ -4914,6 +4923,8 @@ const state = {
   graph: null,
   built_at: null,
   autofit: false,              // graph-level sticky auto-fit (HUD) — off by default
+  orient: 'LR',                // graph flow axis 'LR'|'TB'; sticky across project loads (deliberate: it's a
+                               // viewing pref — the CS viewer isn't full-screen, so the chosen axis should stay)
   autofitFrame: false,         // sticky auto-fit for FRAME selections — off by default, independent
   autofitNode: false,          // sticky auto-fit for NODE/cell selections — off by default, independent
   pendingFit: false,           // request a one-time graph fit on the next layout (project load)
@@ -4950,6 +4961,7 @@ const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValu
 let cy = null;
 
 function cyStyle(){
+  const tb = state.orient === 'TB';
   const edge = cssVar('--edge'), lit = cssVar('--accent');
   return [
     { selector: 'node', style: {
@@ -4960,13 +4972,15 @@ function cyStyle(){
     // the compound graph, and to receive taps on empty frame area (→ select frame).
     { selector: ':parent', style: {
         'background-opacity': 0, 'border-width': 0,
-        'padding': 30, 'shape': 'round-rectangle' } },
+        // tight uniform inset for L/R/B; syncOverlay adds a top band back for the frame title
+        'padding': 16, 'shape': 'round-rectangle' } },
     { selector: 'edge', style: {
         'width': 1.4, 'line-color': edge, 'curve-style': 'round-taxi',
-        'taxi-direction': 'horizontal', 'taxi-turn': '50%', 'taxi-turn-min-distance': '6px', 'radius': 12,
+        'taxi-direction': tb ? 'vertical' : 'horizontal', 'taxi-turn': '50%', 'taxi-turn-min-distance': '6px', 'radius': 12,
         'target-arrow-shape': 'triangle', 'target-arrow-color': edge, 'arrow-scale': 0.85,
-        'source-endpoint': '50% 0%',      // leave the producer from its right edge (output surface)
-        'target-endpoint': '-50% 0%',     // enter the consumer at its left edge (input surface)
+        // LR: leave producer's right edge → enter consumer's left. TB: leave bottom → enter top.
+        'source-endpoint': tb ? '0% 50%' : '50% 0%',
+        'target-endpoint': tb ? '0% -50%' : '-50% 0%',
         'target-distance-from-node': 2 } },
     { selector: '.faded', style: { 'opacity': 0.22 } },
     { selector: 'edge.lit', style: {
@@ -5078,9 +5092,12 @@ function syncOverlay(){
       const bb = node.boundingBox({ includeLabels: false });
       const rbb = node.renderedBoundingBox({ includeLabels: false });
       fe.style.display = node.visible() ? '' : 'none';
+      // :parent padding is a tight uniform 16 (L/R/B); grow the box up by a top band so the
+      // frame-head title keeps its room without fattening the other three sides.
+      const TOP_EXTRA = 14;
       fe.style.width = bb.w + 'px';
-      fe.style.height = bb.h + 'px';
-      fe.style.transform = `translate(${rbb.x1}px,${rbb.y1}px) scale(${z})`;
+      fe.style.height = (bb.h + TOP_EXTRA) + 'px';
+      fe.style.transform = `translate(${rbb.x1}px,${rbb.y1 - TOP_EXTRA * z}px) scale(${z})`;
     }
   }
 }
@@ -5150,8 +5167,8 @@ function buildLayout(){
   const g = state.graph;
   const vis = cy.elements(':visible');
   if (cy.edges(':visible').length){
-    return cy.layout({ name: 'dagre', rankDir: 'LR', ranker: 'network-simplex',
-                       nodeSep: 26, rankSep: 92, edgeSep: 12, animate: false, eles: vis });
+    return cy.layout({ name: 'dagre', rankDir: state.orient, ranker: 'network-simplex',
+                       nodeSep: 34, rankSep: 92, edgeSep: 12, animate: false, eles: vis });
   }
   const usedFrames = new Set(state.frames.map(f => f.id));
   const groups = new Map();                 // frame id (or '__none') -> [node ids], framed first
@@ -5832,6 +5849,21 @@ el.btnFit.addEventListener('dblclick', () => {        // double click: toggle st
   if (state.autofit) fitNow(true);
 });
 $('#btn-relayout').addEventListener('click', () => relayout());
+// flow-direction toggle: swap rankDir + edge routing, restyle, relayout & fit
+function syncOrientBtn(){
+  const tb = state.orient === 'TB';
+  document.getElementById('orient-lbl').textContent = tb ? 'T→B' : 'L→R';
+  const ico = document.getElementById('orient-ico');
+  ico.style.transform = tb ? 'rotate(90deg)' : 'none';
+}
+$('#btn-orient').addEventListener('click', () => {
+  state.orient = state.orient === 'LR' ? 'TB' : 'LR';
+  syncOrientBtn();
+  cy.style(cyStyle());                      // re-route edges for the new axis
+  state.pendingFit = true;
+  attachLayoutStop(buildLayout()).run();   // :visible-scoped — respects isolate
+  PG.action('orient', { dir: state.orient });
+});
 $('#btn-isolate').addEventListener('click', () => setIsolate(!state.isolated));
 $('#zoom-in').addEventListener('click', () => { setAutofit(false); cy.zoom({ level: Math.min(2.5, cy.zoom() * 1.2), renderedPosition: { x: el.cyBox.clientWidth / 2, y: el.cyBox.clientHeight / 2 } }); el.zoomPct.textContent = Math.round(cy.zoom() * 100) + '%'; });
 $('#zoom-out').addEventListener('click', () => { setAutofit(false); cy.zoom({ level: Math.max(0.05, cy.zoom() / 1.2), renderedPosition: { x: el.cyBox.clientWidth / 2, y: el.cyBox.clientHeight / 2 } }); el.zoomPct.textContent = Math.round(cy.zoom() * 100) + '%'; });
