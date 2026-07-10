@@ -4747,8 +4747,8 @@ module.exports = __WEBPACK_EXTERNAL_MODULE__4__;
   <div class="rule"></div>
 
   <div class="counts">
-    <span><b id="c-nodes">0</b> nodes</span>
-    <span><b id="c-edges">0</b> edges</span>
+    <span><b id="c-nodes">0</b> <span id="c-nodes-w">nodes</span></span>
+    <span><b id="c-edges">0</b> <span id="c-edges-w">edges</span></span>
   </div>
 
   <div class="spacer"></div>
@@ -4958,7 +4958,8 @@ const $ = (s, r = document) => r.querySelector(s);
 const el = {
   viewport: $('#viewport'), cyBox: $('#cy'), nodes: $('#nodes'), frames: $('#frames'),
   empty: $('#empty'), stage: $('#stage'), inspector: $('#inspector'),
-  cNodes: $('#c-nodes'), cEdges: $('#c-edges'), age: $('#snap-age'), liveDot: $('#live-dot'),
+  cNodes: $('#c-nodes'), cNodesW: $('#c-nodes-w'), cEdges: $('#c-edges'), cEdgesW: $('#c-edges-w'),
+  age: $('#snap-age'), liveDot: $('#live-dot'),
   zoomPct: $('#zoom-pct'), sel: $('#project'), btnFit: $('#btn-fit'),
   inspBody: $('#insp-body'), inspTitle: $('#insp-title'), inspKind: $('#insp-kind'), inspGlyph: $('#insp-glyph'), inspBack: $('#insp-back'),
 };
@@ -5932,8 +5933,9 @@ new ResizeObserver(() => { clearTimeout(rzT); rzT = setTimeout(() => { if (state
 /* ---------------- header / status ---------------- */
 function updateHeader(){
   const g = state.graph;
-  el.cNodes.textContent = g ? g.nodes.length : 0;
-  el.cEdges.textContent = g ? g.edges.length : 0;
+  const nN = g ? g.nodes.length : 0, nE = g ? g.edges.length : 0;
+  el.cNodes.textContent = nN; el.cNodesW.textContent = nN === 1 ? 'node' : 'nodes';
+  el.cEdges.textContent = nE; el.cEdgesW.textContent = nE === 1 ? 'edge' : 'edges';
 }
 // In CS the cockpit is a STATIC snapshot (render_cockpit bakes one graph); the skill sets __PG_SNAPSHOT
 // so we present an honest "Snapshot · <bake date>" instead of a pulsing "Live … ago" + a dead 2s poll.
