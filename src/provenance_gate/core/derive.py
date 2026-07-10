@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
+from typing import Optional
 
 from .model import ArtifactRef, Edge, Frame, Graph, Node
 
@@ -157,7 +158,7 @@ def _build_frames(frames_raw: list[dict], keep_ids: set[str]) -> tuple[Frame, ..
     return tuple(sorted(frames, key=lambda fr: fr.id))
 
 
-def empty_graph(project_id: str, built_at: float | None = None) -> Graph:
+def empty_graph(project_id: str, built_at: Optional[float] = None) -> Graph:
     """A project with no artifact versions — still gets a real ``built_at`` snapshot token."""
     return Graph(
         cs_project_id=project_id,
@@ -171,7 +172,7 @@ def derive_graph(
     deps: list[dict],
     cells: dict[str, dict],
     frames_raw: list[dict],
-    built_at: float | None = None,
+    built_at: Optional[float] = None,
 ) -> Graph:
     """Neutral records → the immutable Graph. Pure and deterministic given ``built_at``."""
     if not versions:

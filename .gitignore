@@ -26,6 +26,9 @@ design/cs-shots/
 # raw fetched libs — staging for design/vendor_libs.py; the served copy is inlined into ui/cockpit.html
 ui/vendor/
 
+# Built CS skill bundle (design/build_skill.py output) — generated kernel.py/SKILL.md + zip; not tracked
+design/skill_dist/
+
 # Cross-session idea scratch — persistent notes/ideas we collect (incl. from other sessions); not tracked
 ideas/
 
