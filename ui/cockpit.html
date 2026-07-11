@@ -4855,6 +4855,10 @@ let getGraph = async (pid) => {
 // data request with an X-PG-Req header so the server can correlate. Inert with no server (offline).
 // Presentation may call PG.action(name, detail) at interaction points (node click, panel open, …).
 const PG = (() => {
+  // A static in-CS snapshot has NO server to POST to, so disable the whole subsystem: no buffer/flush
+  // timer, no fetch tagging, no getGraph/getProjects wrapping, no error listeners — PG.action no-ops.
+  // (Guarding flush() alone would leak the buffer; this drops the entire observability path.)
+  if (window.__PG_SNAPSHOT) return { action: () => {} };
   const RUN = Math.random().toString(36).slice(2, 10);   // per page-load run_id
   let seq = 0, project = null, curReq = null;
   const buf = [];
@@ -4918,9 +4922,9 @@ const V = { W: 250, H: 88 };   // node card size (also the cy node box)
 // the current version in parens. Version currency (same signal the lineage audit uses).
 function outChip(a){
   const stale = a.is_latest === false;
-  const cur = stale ? `<span class="chip-cur">(v${escHtml(a.latest_version_number)})</span>` : '';
+  const cur = stale ? `<span class="chip-cur">(${curVerLabel(a)})</span>` : '';
   const t = stale
-    ? `${a.filename} v${a.version_number} — stale, current is v${a.latest_version_number}`
+    ? `${a.filename} v${a.version_number} — stale, current is ${curVerLabel(a)}`
     : `${a.filename} v${a.version_number}`;
   return `<span class="chip${stale ? ' stale' : ''}" title="${escHtml(t)}">`
        + `<span class="chip-file">${escHtml(a.filename)}</span>`
@@ -4966,6 +4970,8 @@ const el = {
 
 function escHtml(s){ return (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function cssEsc(s){ return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\]/g, '\\$&'); }
+// current-version label; a null latest_version_number (an unresolvable/NULL-numbered head) shows "v?" not "vnull"
+function curVerLabel(a){ return a.latest_version_number == null ? 'v?' : 'v' + escHtml(a.latest_version_number); }
 const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
 /* ---------------- Cytoscape engine ---------------- */
@@ -5443,7 +5449,7 @@ function artRow(a){
     <button class="art-h" data-art-toggle="${escHtml(a.artifact_version_id)}">
       <span class="chev"></span>
       <span class="art-file mono" title="${escHtml(a.filename)}">${escHtml(a.filename)}</span>
-      <span class="ver${stale ? ' stale' : ''}"${stale ? ` title="current version is v${escHtml(a.latest_version_number)}"` : ''}>v${escHtml(a.version_number)}${stale ? ` <span class="ver-cur">(v${escHtml(a.latest_version_number)})</span>` : ''}</span>
+      <span class="ver${stale ? ' stale' : ''}"${stale ? ` title="current version is ${curVerLabel(a)}"` : ''}>v${escHtml(a.version_number)}${stale ? ` <span class="ver-cur">(${curVerLabel(a)})</span>` : ''}</span>
       <span class="sum-mini">${escHtml(sum.slice(0, 8))}</span>
     </button>
     <div class="art-c">

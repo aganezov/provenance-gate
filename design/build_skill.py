@@ -40,7 +40,8 @@ ASSETS = {
 GENERATED = ("cockpit_template.html", "cockpit-app.js")
 
 # core modules inlined in dependency order; the reader last (it uses derive + model)
-MODULES = ["core/model.py", "core/derive.py", "core/audit.py", "adapters/cs_skill/host_query_reader.py"]
+MODULES = ["core/model.py", "core/walk.py", "core/derive.py", "core/audit.py",
+           "adapters/cs_skill/host_query_reader.py"]
 
 
 # ---- the in-CS cockpit template, generated from ui/cockpit.html at build time ----
@@ -256,17 +257,32 @@ def audit_input_lineage(input_files, planned_output=None):
             "stale": [_issue(s) for s in v.stale], "mixed": [_issue(m) for m in v.mixed]}
 
 
-def render_cockpit():
-    """Write cockpit.html: the full interactive cockpit for the current CS project as a static snapshot
+def render_cockpit(focus=None):
+    """Write cockpit.html: the interactive cockpit for the current CS project as a static snapshot
     (inspector, rail, trace, isolate, flow toggle, framed DAG). The two big STATIC pieces — the cytoscape
     bundle and the app JS (CSS folded in) — are SAVED-ONCE artifacts referenced by their ARTIFACT MARKER
     ({{artifact:VID}} -> served URL, the only <script src> CS's HTTP viewer resolves), so each render
     writes only a KB shell + the baked graph, not the ~770KB whole. First call saves any not-yet-saved
-    asset; follow the returned `next`, then re-run to publish cockpit.html."""
+    asset; follow the returned `next`, then re-run to publish cockpit.html.
+
+    ``focus`` (a filename / artifact id / version id, or a list of them) renders only that seed's
+    UPSTREAM lineage cone — everything it transitively depends on — instead of the whole project; the
+    verdicts stay certain (a newer version off the cone is still flagged stale). Omit it for the full
+    project. A filename seeds ALL of that artifact's versions."""
     import json
     import re
     proj = _current_project()
-    g = _reader().read_project_graph(proj["id"])
+    reader = _reader()
+    if focus is not None:  # None = full project; an EMPTY focus ([]/"") is a request that matched nothing
+        focus = sorted(focus) if isinstance(focus, (set, frozenset)) else focus  # JSON-safe + stable
+        seeds = reader.resolve_seeds(proj["id"], focus)
+        if not seeds:
+            return {"project": proj["id"], "status": "focus_unresolved", "focus": focus,
+                    "next": "focus matched no artifact/version in this project — check the name"}
+        g = reader.read_graph(proj["id"], seeds=seeds)
+    else:
+        g = reader.read_graph(proj["id"])
+    scope = {"focus": focus}   # uniform shape: focus is None for a full-project render
     # each big static asset must be a SAVED artifact so we can reference it by marker ({{artifact:VID}} is
     # the only <script src> CS's viewer resolves). Look each up by filename; write + collect any not yet
     # saved, and hand them ALL to the agent to save_artifacts once, then re-run.
@@ -286,9 +302,10 @@ def render_cockpit():
                 f.write(b["content"] if isinstance(b, dict) else b)
             unsaved.append(filename)
     if unsaved:
-        return {"project": g.cs_project_id, "nodes": len(g.nodes), "status": "need_assets_saved",
-                "files": unsaved,
-                "next": "save_artifacts(" + json.dumps(unsaved) + ") once, then call render_cockpit() again"}
+        call = "render_cockpit(focus=" + json.dumps(focus) + ")" if focus else "render_cockpit()"
+        return {"project": g.cs_project_id, "nodes": len(g.nodes), "scope": scope,
+                "status": "need_assets_saved", "files": unsaved,
+                "next": "save_artifacts(" + json.dumps(unsaved) + ") once, then call " + call + " again"}
     t = host.skills.read("__SKILL_NAME__", "cockpit_template.html")
     t = t["content"] if isinstance(t, dict) else t
     # the getGraph wire shape from the ONE shared serializer (core.audit.graph_response, inlined) —
@@ -306,7 +323,7 @@ def render_cockpit():
     html = re.sub("|".join(re.escape(k) for k in subs), lambda m: subs[m.group(0)], t)
     with open("cockpit.html", "w", encoding="utf-8") as f:
         f.write(html)
-    return {"project": g.cs_project_id, "nodes": len(g.nodes), "status": "rendered",
+    return {"project": g.cs_project_id, "nodes": len(g.nodes), "scope": scope, "status": "rendered",
             "files": ["cockpit.html"], "next": "call save_artifacts(['cockpit.html']) to publish"}
 '''
 
@@ -322,8 +339,8 @@ def audit_input_lineage(input_files, planned_output=None):
     return pg_impl(host)["audit_input_lineage"](input_files, planned_output)
 
 
-def render_cockpit():
-    return pg_impl(host)["render_cockpit"]()
+def render_cockpit(focus=None):
+    return pg_impl(host)["render_cockpit"](focus)
 
 
 def pg_dev_sync():
@@ -360,10 +377,14 @@ Deterministic, claim-level provenance audit for the current project. Two helpers
 - **`audit_input_lineage(input_files, planned_output=None)`** — before writing an output, check the
   latest versions of the named input files: same `stale_input` / `version_mix` verdict over their
   lineage closure.
-- **`render_cockpit()`** — write an interactive `cockpit.html` (project DAG, each cell coloured by its
-  verdict: clean / stale input / version mix), referencing the cytoscape bundle by its artifact marker
-  so it stays KB. The first call returns the bundle to `save_artifacts` once; then it (and later renders)
-  return `cockpit.html` to `save_artifacts`. Follow the returned `next` field.
+- **`render_cockpit(focus=None)`** — write an interactive `cockpit.html` (project DAG, each cell
+  coloured by its verdict: clean / stale input / version mix), referencing the cytoscape bundle by its
+  artifact marker so it stays KB. The first call returns the static assets to `save_artifacts` once;
+  then it (and later renders) return `cockpit.html` to `save_artifacts`. Follow the returned `next`
+  field. Pass `focus` (a filename / artifact id / version id, or a list) to render only that seed's
+  **upstream lineage cone** — everything it transitively depends on — instead of the whole project;
+  the verdicts stay certain (a newer version off the cone is still flagged stale). A filename seeds
+  every version of that artifact.
 
 All are computed from provenance alone (nothing stored) and are deterministic. A linear revision chain
 (reading v1 to write v2) is a supersession, not a conflict, and is not flagged.
