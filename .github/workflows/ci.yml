@@ -1,7 +1,8 @@
 name: CI
 
-# Lean gate: uv sync (locked) -> ruff -> pytest. Correctness lives in unit/integration
-# tests; demos are a discipline, not a CI gate. Kept deliberately small.
+# Lean gate: uv sync (locked) -> ruff -> pytest, plus the Node browser-boundary tests.
+# Correctness lives in unit/integration tests; demos are a discipline, not a CI gate.
+# Kept deliberately small.
 
 on:
   push:
@@ -39,3 +40,9 @@ jobs:
 
       - name: Tests
         run: uv run pytest
+
+      - name: Node browser-boundary tests
+        # Uses the runner's preinstalled Node (>=20); the boundary tests rely only on
+        # node:test / node:assert, so no npm install is required.
+        working-directory: evals/claude-science-rollouts/browser
+        run: node --test test/*.test.mjs

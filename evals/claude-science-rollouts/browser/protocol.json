@@ -1,0 +1,22 @@
+{
+  "protocol_version": 1,
+  "limits": {
+    "request_bytes": 131072,
+    "response_bytes": 262144,
+    "error_evidence_bytes": 8192,
+    "deadline_ms": 900000
+  },
+  "operations": [
+    "session.inspect",
+    "project.inspect",
+    "project.create",
+    "attachment.upload",
+    "agent_context.inspect",
+    "agent_context.update",
+    "chat.new",
+    "chat.open",
+    "chat.inspect",
+    "turn.submit_wait",
+    "approval.resolve"
+  ]
+}

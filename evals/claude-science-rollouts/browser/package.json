@@ -1,0 +1,15 @@
+{
+  "name": "browser-boundary",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@playwright/cli": "0.1.17"
+  }
+}
