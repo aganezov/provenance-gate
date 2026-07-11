@@ -2,6 +2,31 @@ version = 1
 revision = 3
 requires-python = ">=3.11"
 
+[manifest]
+members = [
+    "claude-science-rollouts",
+    "provenance-gate",
+]
+
+[[package]]
+name = "claude-science-rollouts"
+version = "0.0.1"
+source = { editable = "evals/claude-science-rollouts" }
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8" },
+    { name = "ruff", specifier = ">=0.6" },
+]
+
 [[package]]
 name = "colorama"
 version = "0.4.6"

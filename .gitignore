@@ -32,5 +32,13 @@ design/skill_dist/
 # Cross-session idea scratch — persistent notes/ideas we collect (incl. from other sessions); not tracked
 ideas/
 
+# Eval harness (evals/) — never commit raw run evidence, the Node subpackage's deps, or browser
+# auth/session/profile state (sensitive). The harness sets exact profile/auth dir names; these
+# anticipate the common ones so nothing sensitive is committed even on first creation.
+evals/*/runs/
+node_modules/
+evals/**/.auth/
+evals/**/browser-profile/
+
 # OS
 .DS_Store
