@@ -69,6 +69,28 @@ test("session inspection result fields are exact and typed", () => {
   );
 });
 
+test("session lifecycle payloads are empty and detach results are exact", () => {
+  for (const operation of ["session.attach", "session.inspect", "session.detach"]) {
+    assert.throws(
+      () => parseRequestText(
+        JSON.stringify(request({ operation, payload: { extra: true } })),
+      ),
+      (error) =>
+        error instanceof BoundaryError && error.code === "INVALID_FIELDS",
+    );
+  }
+  const parsed = parseRequestText(
+    JSON.stringify(request({ operation: "session.detach" })),
+  );
+  assert.deepEqual(completedResponse(parsed, { detached: true }, 3).result, {
+    detached: true,
+  });
+  assert.throws(
+    () => completedResponse(parsed, { detached: "yes" }, 3),
+    (error) => error instanceof BoundaryError && error.code === "INVALID_BOOLEAN",
+  );
+});
+
 test("credential-like fields are forbidden recursively", () => {
   assert.throws(
     () => parseRequestText(JSON.stringify(request({ payload: { password: "x" } }))),

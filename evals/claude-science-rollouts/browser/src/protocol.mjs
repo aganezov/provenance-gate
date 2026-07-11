@@ -93,7 +93,11 @@ export function validateRequest(value) {
   );
   validateSession(request.session);
   object(request.payload, "request.payload");
-  if (request.operation === "session.inspect") {
+  if (
+    ["session.attach", "session.inspect", "session.detach"].includes(
+      request.operation,
+    )
+  ) {
     exactKeys(request.payload, [], "request.payload");
   }
   // Redundant when reached via parseRequestText (raw text was already size-checked), but
@@ -121,7 +125,12 @@ export function completedResponse(request, result, elapsedMs) {
 }
 
 function validateOperationResult(operation, result) {
-  if (operation !== "session.inspect") return;
+  if (operation === "session.detach") {
+    exactKeys(result, ["detached"], "response.result");
+    boolean(result.detached, "response.result.detached");
+    return;
+  }
+  if (!["session.attach", "session.inspect"].includes(operation)) return;
   exactKeys(
     result,
     ["authenticated", "origin", "profile_ready"],

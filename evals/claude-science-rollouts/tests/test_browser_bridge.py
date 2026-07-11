@@ -13,6 +13,7 @@ from claude_science_rollouts.browser import (
     BrowserProcessError,
     BrowserProtocolError,
     BrowserRequest,
+    BrowserSession,
     BrowserTimeoutError,
     make_request,
     parse_response,
@@ -128,6 +129,26 @@ def test_session_inspection_result_is_exact_and_typed() -> None:
         parse_response(json.dumps(response), request())
 
 
+def test_session_detach_result_is_exact_and_typed() -> None:
+    detach_request = make_request(
+        "session.detach",
+        request_id="request-001",
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+        deadline_ms=15_000,
+    )
+    response = {
+        "protocol_version": 1,
+        "request_id": "request-001",
+        "operation": "session.detach",
+        "outcome": "completed",
+        "elapsed_ms": 1,
+        "result": {"detached": "yes"},
+    }
+    with pytest.raises(BrowserProtocolError, match="detached"):
+        parse_response(json.dumps(response), detach_request)
+
+
 def test_real_python_to_node_mock_round_trip() -> None:
     node = shutil.which("node")
     if node is None:
@@ -158,6 +179,39 @@ def test_typed_client_records_boundary_and_wall_time(tmp_path: Path) -> None:
     assert outcome.boundary_elapsed_ms >= 0
     assert outcome.wall_elapsed_ms >= 0
     assert outcome.transport_overhead_ms >= 0
+
+
+def test_python_owns_attach_many_detach_lifecycle(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is not installed")
+    client = BrowserClient(
+        bridge=BrowserBridge((node, str(MOCK_BOUNDARY)), cwd=tmp_path),
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+    )
+    session = BrowserSession(client)
+
+    attached = session.attach(request_id="attach-001")
+    assert attached.outcome == "completed"
+    assert session.attached
+    with pytest.raises(RuntimeError, match="already attached"):
+        session.attach(request_id="attach-duplicate")
+
+    for index in range(2):
+        inspected = session.inspect(request_id=f"inspect-{index}")
+        assert inspected.outcome == "completed"
+        assert inspected.inspection is not None
+        assert inspected.inspection.origin == client.origin
+
+    detached = session.detach(request_id="detach-001")
+    assert detached.outcome == "completed"
+    assert detached.detached
+    assert not session.attached
+    with pytest.raises(RuntimeError, match="not attached"):
+        session.inspect(request_id="inspect-after-detach")
+    with pytest.raises(RuntimeError, match="not attached"):
+        session.detach(request_id="detach-duplicate")
 
 
 def test_typed_client_requires_explicit_absolute_working_directory() -> None:
