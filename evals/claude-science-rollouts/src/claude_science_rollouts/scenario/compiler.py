@@ -30,9 +30,11 @@ def compile_scenario(scenario: Scenario, *, trial: str = "bare") -> tuple[Step, 
     if trial not in scenario.trial.variants:
         raise ScenarioError(f"unknown trial variant {trial!r}")
     chat_of = {s.id: s.chat for s in scenario.sessions}
-    gates_after: dict[str, list[str]] = {}
+    # Both gate- and measure-mode checkpoints emit a "gate" step here; the bridge dereferences
+    # ``checkpoint_id`` back to the scenario to learn whether to fail-close or merely record.
+    checkpoints_after: dict[str, list[str]] = {}
     for cp in scenario.checkpoints:
-        gates_after.setdefault(cp["after_turn_id"], []).append(cp["id"])
+        checkpoints_after.setdefault(cp["after_turn_id"], []).append(cp["id"])
 
     steps: list[Step] = []
     opened: set[str] = set()
@@ -60,7 +62,7 @@ def compile_scenario(scenario: Scenario, *, trial: str = "bare") -> tuple[Step, 
         if attach_before == t.turn_id:
             steps.append(Step(op="attach", session=t.session, fixture=scenario.fixture))
         steps.append(Step(op="submit", session=t.session, turn_id=t.turn_id, prompt=t.prompt))
-        for cp_id in gates_after.get(t.turn_id, []):
+        for cp_id in checkpoints_after.get(t.turn_id, []):
             steps.append(Step(op="gate", checkpoint_id=cp_id))
 
     tr = scenario.trial

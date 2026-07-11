@@ -21,6 +21,10 @@ SCHEMA_VERSION = 1
 _MODES = frozenset({"gate", "measure"})
 _CHAT = frozenset({"new", "resume"})
 _APPROVAL_ACTIONS = frozenset({"deny", "allow_for_conversation"})
+# Required top-level keys per assertion kind. This registry is one half of a pair: every kind here
+# must have a matching evaluation branch in ``checkpoints._assert``. A kind added here but not there
+# passes load-time validation and raises at evaluation; the reverse is caught at load. Keep them in
+# sync — the nested-shape checks in ``_assertion`` below mirror what ``_assert`` indexes.
 _ASSERTION_KEYS: dict[str, tuple[str, ...]] = {
     "version_exists": ("artifact", "version"),
     "latest_version": ("artifact", "version"),
@@ -105,6 +109,21 @@ def _str(value: Any, ctx: str) -> str:
     return value
 
 
+def _int(value: Any, ctx: str) -> int:
+    # bool is an int subclass — exclude it so ``version: true`` can't pose as a version number.
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ScenarioError(f"{ctx} must be an integer")
+    return value
+
+
+def _ref(value: Any, ctx: str) -> None:
+    """An artifact reference: an object with a non-empty ``artifact`` and an integer ``version``."""
+    if not isinstance(value, dict):
+        raise ScenarioError(f"{ctx} must be an object")
+    _str(value.get("artifact"), f"{ctx}.artifact")
+    _int(value.get("version"), f"{ctx}.version")
+
+
 def _sessions(raw: Any) -> tuple[Session, ...]:
     if not isinstance(raw, list) or not raw:
         raise ScenarioError("sessions must be a non-empty array")
@@ -125,12 +144,46 @@ def _sessions(raw: Any) -> tuple[Session, ...]:
 def _assertion(a: Any, ctx: str) -> None:
     if not isinstance(a, dict) or "kind" not in a:
         raise ScenarioError(f"{ctx}: each assertion must be an object with a 'kind'")
-    keys = _ASSERTION_KEYS.get(a["kind"])
+    kind = a["kind"]
+    keys = _ASSERTION_KEYS.get(kind)
     if keys is None:
-        raise ScenarioError(f"{ctx}: unknown assertion kind {a['kind']!r}")
+        raise ScenarioError(f"{ctx}: unknown assertion kind {kind!r}")
     missing = [k for k in keys if k not in a]
     if missing:
-        raise ScenarioError(f"{ctx}: assertion {a['kind']!r} missing keys {missing}")
+        raise ScenarioError(f"{ctx}: assertion {kind!r} missing keys {missing}")
+    # The evaluator (``checkpoints._assert``) indexes these sub-fields directly, so a malformed
+    # shape must fail closed at load, not fail-confusingly (or trivially pass) at evaluation.
+    if kind in ("version_exists", "latest_version"):
+        _str(a["artifact"], f"{ctx}.artifact")
+        _int(a["version"], f"{ctx}.version")
+    elif kind == "depends_on":
+        _ref(a["consumer"], f"{ctx}.consumer")
+        inputs = a["inputs"]
+        if not isinstance(inputs, list) or not inputs:
+            raise ScenarioError(f"{ctx}: 'inputs' must be a non-empty array")
+        for j, item in enumerate(inputs):
+            _ref(item, f"{ctx}.inputs[{j}]")
+    elif kind == "closure_contains":
+        _ref(a["node"], f"{ctx}.node")
+        artifacts = a["artifacts"]
+        if not isinstance(artifacts, dict) or not artifacts:
+            raise ScenarioError(f"{ctx}: 'artifacts' must be a non-empty object")
+        for fn, numbers in artifacts.items():
+            if not isinstance(fn, str) or not fn:
+                raise ScenarioError(f"{ctx}.artifacts keys must be non-empty strings")
+            if not isinstance(numbers, list) or not numbers:
+                raise ScenarioError(f"{ctx}.artifacts[{fn!r}] must be a non-empty array")
+            for n in numbers:
+                _int(n, f"{ctx}.artifacts[{fn!r}] version")
+    elif kind in ("checksums_differ", "checksums_equal"):
+        _str(a["artifact"], f"{ctx}.artifact")
+        versions = a["versions"]
+        if not isinstance(versions, list) or len(versions) < 2:
+            raise ScenarioError(
+                f"{ctx}: {kind!r} requires at least 2 version numbers in 'versions'"
+            )
+        for n in versions:
+            _int(n, f"{ctx}.versions")
 
 
 def _fixture(raw: Any, turn_ids: set[str]) -> dict[str, Any] | None:
@@ -239,15 +292,19 @@ def load_scenario(path: str | Path) -> Scenario:
             raise ScenarioError(f"duplicate checkpoint id: {cp_id!r}")
         cp_ids.add(cp_id)
 
-    rules = []
+    rules, rule_ids = [], set()
     for i, r in enumerate(raw.get("response_rules", []) or []):
         if not isinstance(r, dict):
             raise ScenarioError(f"response_rules[{i}] must be an object")
+        rid = _str(r.get("id"), f"response_rules[{i}].id")
+        if rid in rule_ids:
+            raise ScenarioError(f"duplicate response_rule id: {rid!r}")
+        rule_ids.add(rid)
         after = _str(r.get("after_turn_id"), f"response_rules[{i}].after_turn_id")
         if after not in turn_ids:
             raise ScenarioError(f"response_rules[{i}].after_turn_id must name a construction turn")
         rules.append(ResponseRule(
-            id=_str(r.get("id"), f"response_rules[{i}].id"),
+            id=rid,
             after_turn_id=after,
             trigger=_str(r.get("trigger"), f"response_rules[{i}].trigger"),
             reply=_str(r.get("reply"), f"response_rules[{i}].reply"),

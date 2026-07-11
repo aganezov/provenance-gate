@@ -153,3 +153,63 @@ def test_approval_policy_unknown_key_rejected(tmp_path):
     pol = {"action": "allow_for_conversation", "max_approvals": 4, "titles": ["x"]}
     with pytest.raises(ScenarioError, match="unknown keys"):
         _load(tmp_path, _minimal(approval_policy=pol))
+
+
+def _with_assertion(assertion):
+    """A minimal scenario whose sole gate carries ``assertion`` — for load-time shape checks."""
+    return _minimal(checkpoints=[
+        {"id": "c", "mode": "gate", "after_turn_id": "t1", "assertions": [assertion]}
+    ])
+
+
+def test_checksums_differ_requires_two_versions(tmp_path):
+    # regression (review high): a single-element list makes checksums_differ trivially true
+    bad = {"kind": "checksums_differ", "artifact": "a", "versions": [1]}
+    with pytest.raises(ScenarioError, match="at least 2 version numbers"):
+        _load(tmp_path, _with_assertion(bad))
+
+
+def test_version_must_be_an_integer(tmp_path):
+    bad = {"kind": "version_exists", "artifact": "a", "version": "1"}
+    with pytest.raises(ScenarioError, match="must be an integer"):
+        _load(tmp_path, _with_assertion(bad))
+
+
+def test_version_bool_is_not_an_integer(tmp_path):
+    bad = {"kind": "version_exists", "artifact": "a", "version": True}
+    with pytest.raises(ScenarioError, match="must be an integer"):
+        _load(tmp_path, _with_assertion(bad))
+
+
+def test_depends_on_empty_inputs_rejected(tmp_path):
+    bad = {"kind": "depends_on", "consumer": {"artifact": "a", "version": 1}, "inputs": []}
+    with pytest.raises(ScenarioError, match="'inputs' must be a non-empty array"):
+        _load(tmp_path, _with_assertion(bad))
+
+
+def test_depends_on_malformed_consumer_rejected(tmp_path):
+    bad = {"kind": "depends_on", "consumer": "a",
+           "inputs": [{"artifact": "b", "version": 1}]}
+    with pytest.raises(ScenarioError, match="consumer must be an object"):
+        _load(tmp_path, _with_assertion(bad))
+
+
+def test_closure_contains_malformed_artifacts_rejected(tmp_path):
+    bad = {"kind": "closure_contains", "node": {"artifact": "a", "version": 1}, "artifacts": []}
+    with pytest.raises(ScenarioError, match="'artifacts' must be a non-empty object"):
+        _load(tmp_path, _with_assertion(bad))
+
+
+def test_valid_structured_assertions_load(tmp_path):
+    ok = {"kind": "depends_on", "consumer": {"artifact": "a", "version": 2},
+          "inputs": [{"artifact": "b", "version": 1}, {"artifact": "c", "version": 1}]}
+    assert _load(tmp_path, _with_assertion(ok)).scenario_id == "x"
+
+
+def test_duplicate_response_rule_id_rejected(tmp_path):
+    rules = [
+        {"id": "r", "after_turn_id": "t1", "trigger": "x", "reply": "y"},
+        {"id": "r", "after_turn_id": "t1", "trigger": "z", "reply": "w"},
+    ]
+    with pytest.raises(ScenarioError, match="duplicate response_rule id"):
+        _load(tmp_path, _minimal(response_rules=rules))

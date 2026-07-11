@@ -44,10 +44,13 @@ def test_miswired_ifn_panel_is_rejected():
     """Regression (review blocker 2): panel_ifn v2 must derive from ifn_signature v2."""
     op = Operon()
     pbmc(op, conflict=True)
-    op.conn.execute(
+    cur = op.conn.execute(
         "UPDATE artifact_dependencies SET depends_on_version_id='v_a_cells.qc.csv_2' "
         "WHERE artifact_version_id='v_a_panel_ifn.csv_2'"
     )
+    # Guard the fixture's ID scheme: if the edge below stops matching, the mis-wiring never happens
+    # and this regression would pass vacuously. Fail loudly instead.
+    assert cur.rowcount == 1
     results = _gates(op)
     assert all_gates_pass(results) is False
     assert "strict-ifn-panel" in {r.id for r in results if not r.passed}
