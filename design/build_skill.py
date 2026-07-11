@@ -41,7 +41,7 @@ GENERATED = ("cockpit_template.html", "cockpit-app.js")
 
 # core modules inlined in dependency order; the reader last (it uses derive + model)
 MODULES = ["core/model.py", "core/walk.py", "core/derive.py", "core/audit.py",
-           "adapters/cs_skill/host_query_reader.py"]
+           "core/review_kit.py", "adapters/cs_skill/host_query_reader.py"]
 
 
 # ---- the in-CS cockpit template, generated from ui/cockpit.html at build time ----
@@ -167,7 +167,7 @@ def _kernel_source() -> str:
         + "\n\ndef pg_impl(host):\n"
         + textwrap.indent(nested, "    ")
         + '\n    return {"audit_project": audit_project, "audit_input_lineage": audit_input_lineage,'
-        + '\n            "render_cockpit": render_cockpit}\n'
+        + '\n            "render_cockpit": render_cockpit, "review_subgraph": review_subgraph}\n'
         + WRAPPERS
     ).replace(", slots=True", "").replace("__SKILL_NAME__", SKILL_NAME)
 
@@ -213,24 +213,13 @@ def _current_project_id():
     return _current_project()["id"]
 
 
-def _issue(vi):
-    return {"artifact": vi.artifact, "versions": list(vi.versions), "current": vi.current}
-
-
 def audit_project():
     """Trust verdict for every computation in the current CS project: which cells consume a stale
     input (stale_input) or merge two live versions of one artifact (version_mix). Reuses core.audit."""
     g = _reader().read_project_graph(_current_project_id())
     verdicts = audit_graph(g)
     label = {n.id: n.label for n in g.nodes}
-    flagged = sorted(
-        (
-            {"cell": label.get(nid, nid), "verdict": v.level,
-             "stale": [_issue(s) for s in v.stale], "mixed": [_issue(m) for m in v.mixed]}
-            for nid, v in verdicts.items() if v.level != CLEAN
-        ),
-        key=lambda f: f["cell"],
-    )
+    flagged = flagged_verdicts(verdicts, label)   # the one flag serializer, shared with review_kit
     return {"project": g.cs_project_id, "cells": len(g.nodes),
             "clean": sum(1 for v in verdicts.values() if v.level == CLEAN), "flagged": flagged}
 
@@ -254,7 +243,17 @@ def audit_input_lineage(input_files, planned_output=None):
                 "verdict": "LINEAGE_MISSING" if missing else "NOT_APPLICABLE"}
     v = audit_inputs(g, vids)
     return {"planned_output": planned_output, "missing_inputs": missing, "verdict": v.level,
-            "stale": [_issue(s) for s in v.stale], "mixed": [_issue(m) for m in v.mixed]}
+            "stale": issues(v.stale), "mixed": issues(v.mixed)}
+
+
+def _resolve_cone(reader, proj, refs):
+    """Resolve seed refs (a filename / id, or a list) to a lineage cone. Returns (normalised_refs,
+    graph); graph is None when nothing resolved, so the caller formats its own *_unresolved status."""
+    refs = sorted(refs) if isinstance(refs, (set, frozenset)) else refs  # JSON-safe + stable
+    seeds = reader.resolve_seeds(proj["id"], refs)
+    if not seeds:
+        return refs, None
+    return refs, reader.read_graph(proj["id"], seeds=seeds)
 
 
 def render_cockpit(focus=None):
@@ -274,12 +273,10 @@ def render_cockpit(focus=None):
     proj = _current_project()
     reader = _reader()
     if focus is not None:  # None = full project; an EMPTY focus ([]/"") is a request that matched nothing
-        focus = sorted(focus) if isinstance(focus, (set, frozenset)) else focus  # JSON-safe + stable
-        seeds = reader.resolve_seeds(proj["id"], focus)
-        if not seeds:
+        focus, g = _resolve_cone(reader, proj, focus)
+        if g is None:
             return {"project": proj["id"], "status": "focus_unresolved", "focus": focus,
                     "next": "focus matched no artifact/version in this project — check the name"}
-        g = reader.read_graph(proj["id"], seeds=seeds)
     else:
         g = reader.read_graph(proj["id"])
     scope = {"focus": focus}   # uniform shape: focus is None for a full-project render
@@ -325,6 +322,21 @@ def render_cockpit(focus=None):
         f.write(html)
     return {"project": g.cs_project_id, "nodes": len(g.nodes), "scope": scope, "status": "rendered",
             "files": ["cockpit.html"], "next": "call save_artifacts(['cockpit.html']) to publish"}
+
+
+def review_subgraph(nodes, scope="upstream"):
+    """A deterministic review brief over a chosen lineage subgraph. Resolve ``nodes`` (a filename /
+    artifact id / version id, or a list of them) to seeds, read their UPSTREAM cone, and hand back the
+    evidence — flagged conflicts, lineage edges, artifact inventory, and the cell ids to fetch code
+    for. Fixes WHAT to look at (same nodes -> same brief); the agent reasons and may walk deeper.
+    Backed by core.review_kit; ``scope`` is a passthrough label for now (upstream cone)."""
+    proj = _current_project()
+    reader = _reader()
+    nodes, g = _resolve_cone(reader, proj, nodes)
+    if g is None:
+        return {"project": proj["id"], "status": "seeds_unresolved", "nodes": nodes,
+                "next": "none matched an artifact/version in this project; check the names/ids"}
+    return review_kit(g, scope)
 '''
 
 
@@ -341,6 +353,10 @@ def audit_input_lineage(input_files, planned_output=None):
 
 def render_cockpit(focus=None):
     return pg_impl(host)["render_cockpit"](focus)
+
+
+def review_subgraph(nodes, scope="upstream"):
+    return pg_impl(host)["review_subgraph"](nodes, scope)
 
 
 def pg_dev_sync():
@@ -362,7 +378,7 @@ def pg_dev_sync():
 
 SKILL_MD = '''---
 name: __SKILL_NAME__
-description: Deterministic trust audit over the current Claude Science project's provenance DAG. Call audit_project() for a per-cell verdict (which computations consume a stale input or merge two live versions of one artifact), or audit_input_lineage(files) before writing an output to check its inputs' lineage. Use when reasoning about whether a result is built on current, consistent upstream data.
+description: Deterministic trust audit over the current Claude Science project's provenance DAG. Call audit_project() for a per-cell verdict (which computations consume a stale input or merge two live versions of one artifact), audit_input_lineage(files) before writing an output to check its inputs' lineage, or review_subgraph(nodes) for a deterministic evidence brief over a chosen lineage subgraph to ground a review. Use when reasoning about whether a result is built on current, consistent upstream data.
 ---
 
 # __SKILL_NAME__
@@ -385,6 +401,13 @@ Deterministic, claim-level provenance audit for the current project. Two helpers
   **upstream lineage cone** — everything it transitively depends on — instead of the whole project;
   the verdicts stay certain (a newer version off the cone is still flagged stale). A filename seeds
   every version of that artifact.
+- **`review_subgraph(nodes, scope="upstream")`** — a deterministic **review brief** over a chosen
+  lineage subgraph. Pass the nodes to review (a filename / artifact id / version id, or a list); it
+  resolves them to seeds, reads their upstream cone, and returns the evidence: the flagged conflicts
+  (`stale_input` / `version_mix`), the lineage as consumption edges, the artifact inventory
+  (filename · version · checksum · is-latest), the raw-input boundary, and the cell ids to fetch
+  producing code for. It fixes WHAT to look at — you do the reasoning and may walk deeper with your
+  own tools. Use it to ground a review instead of free-exploring the graph.
 
 All are computed from provenance alone (nothing stored) and are deterministic. A linear revision chain
 (reading v1 to write v2) is a supersession, not a conflict, and is not flagged.

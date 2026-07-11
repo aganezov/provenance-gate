@@ -120,6 +120,23 @@ def test_render_cockpit_empty_focus_is_unresolved(cs_conn, tmp_path, monkeypatch
     assert ns["render_cockpit"](focus=0)["status"] == "focus_unresolved"   # off-contract; no crash
 
 
+def test_inlined_kernel_review_subgraph(cs_conn):
+    # review_subgraph reads the seed's upstream cone and returns core.review_kit's brief.
+    # note.txt's lineage is c0 -> c1, so nodes == 2 (the same cone render_cockpit(focus) reads).
+    ns = _exec_kernel(_FakeHost(cs_conn))
+    kit = ns["review_subgraph"]("note.txt")
+    assert kit["scope"] == "upstream" and kit["nodes"] == 2
+    assert "note.txt" in kit["focus"]
+    for key in ("flags", "lineage", "artifacts", "boundary", "cells", "question"):
+        assert key in kit
+
+
+def test_inlined_kernel_review_subgraph_unresolved(cs_conn):
+    # nodes that name nothing in the project report it, not a silent empty brief
+    ns = _exec_kernel(_FakeHost(cs_conn))
+    assert ns["review_subgraph"]("nonexistent.csv")["status"] == "seeds_unresolved"
+
+
 def test_render_cockpit_full_scope_is_uniform_dict(cs_conn, tmp_path, monkeypatch):
     # scope is always a dict; a full render carries focus=None (not the string "full")
     monkeypatch.chdir(tmp_path)

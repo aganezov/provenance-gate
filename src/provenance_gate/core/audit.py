@@ -157,6 +157,24 @@ def audit_graph(graph: Graph) -> dict[str, Verdict]:
     return {n.id: _verdict(n, _in_cone(out_cones, deps[n.id]), ref_of) for n in graph.nodes}
 
 
+def issues(items) -> list:
+    """A VersionIssue tuple -> JSON-safe dicts (filename + version numbers in play). Shared by
+    audit_project / audit_input_lineage and review_kit so the 'issue' shape is defined once."""
+    return [{"artifact": i.artifact, "versions": list(i.versions), "current": i.current}
+            for i in items]
+
+
+def flagged_verdicts(verdicts: dict, label: dict) -> list:
+    """The non-CLEAN verdicts as sorted flag dicts ``{cell, verdict, stale, mixed}`` — one
+    serializer shared by audit_project and review_kit, so the conflicts shape lives in one place."""
+    return sorted(
+        ({"cell": label.get(nid, nid), "verdict": v.level,
+          "stale": issues(v.stale), "mixed": issues(v.mixed)}
+         for nid, v in verdicts.items() if v.level != CLEAN),
+        key=lambda r: r["cell"],
+    )
+
+
 def graph_response(graph: Graph) -> dict:
     """The ``getGraph`` wire shape both surfaces serve: ``asdict(graph)`` + each node's ``verdict``.
     The ONE authoritative serializer — server + in-CS kernel both call it, so the JSON the cockpit
