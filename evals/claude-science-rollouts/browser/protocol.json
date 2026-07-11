@@ -7,7 +7,9 @@
     "deadline_ms": 900000
   },
   "operations": [
+    "session.attach",
     "session.inspect",
+    "session.detach",
     "project.inspect",
     "project.create",
     "attachment.upload",

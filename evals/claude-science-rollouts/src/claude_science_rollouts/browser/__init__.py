@@ -3,6 +3,8 @@
 from claude_science_rollouts.browser.bridge import BoundaryInvocation, BrowserBridge
 from claude_science_rollouts.browser.client import (
     BrowserClient,
+    BrowserSession,
+    SessionDetachOutcome,
     SessionInspection,
     SessionInspectionOutcome,
 )
@@ -24,6 +26,7 @@ __all__ = [
     "BrowserBoundaryError",
     "BrowserBridge",
     "BrowserClient",
+    "BrowserSession",
     "BrowserError",
     "BrowserProcessError",
     "BrowserProtocolError",
@@ -33,6 +36,7 @@ __all__ = [
     "BoundaryInvocation",
     "SessionInspection",
     "SessionInspectionOutcome",
+    "SessionDetachOutcome",
     "make_request",
     "parse_response",
 ]

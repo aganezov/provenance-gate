@@ -26,19 +26,25 @@ export const SESSION_INSPECT_SOURCE = `async (page) => {
   };
 }`;
 
-export function createSessionInspectHandler({
+export function createSessionAttachHandler({
   browserOwner,
   runCommand = runCli,
 } = {}) {
-  return async function inspectSession(_payload, context) {
+  return async function attachSession(_payload, context) {
     const startedAt = performance.now();
-    if (browserOwner !== undefined) {
-      if (!SESSION_NAME.test(browserOwner)) {
-        throw new BoundaryError(
-          "INVALID_BROWSER_OWNER",
-          "Configured browser owner is invalid",
-        );
-      }
+    if (browserOwner === undefined) {
+      throw new BoundaryError(
+        "BROWSER_OWNER_REQUIRED",
+        "Browser owner is not configured",
+      );
+    }
+    if (!SESSION_NAME.test(browserOwner)) {
+      throw new BoundaryError(
+        "INVALID_BROWSER_OWNER",
+        "Configured browser owner is invalid",
+      );
+    }
+    try {
       await runCommand(
         [
           "--raw",
@@ -49,43 +55,132 @@ export function createSessionInspectHandler({
         ],
         { deadlineMs: remainingDeadline(context.deadlineMs, startedAt) },
       );
+    } catch (error) {
+      throw mutationFailure("ATTACH", error);
     }
-    const stdout = await runCommand(
-      [
-        "--raw",
-        `-s=${context.session.session_id}`,
-        "run-code",
-        SESSION_INSPECT_SOURCE,
-      ],
-      { deadlineMs: remainingDeadline(context.deadlineMs, startedAt) },
-    );
+    try {
+      return await inspectSession(runCommand, context, startedAt);
+    } catch (error) {
+      const cleanedUp = await tryDetachSession(runCommand, context, startedAt);
+      if (!cleanedUp) {
+        throw new BoundaryError(
+          "ATTACH_CLEANUP_UNCONFIRMED",
+          "Browser session attachment cleanup could not be confirmed",
+          {
+            outcome: "unknown_outcome",
+            retryable: false,
+            evidence: {
+              cause_code: error instanceof BoundaryError
+                ? error.code
+                : "BOUNDARY_FAILURE",
+            },
+          },
+        );
+      }
+      throw error;
+    }
+  };
+}
+
+export function createSessionInspectHandler({ runCommand = runCli } = {}) {
+  return async function inspectExistingSession(_payload, context) {
+    return inspectSession(runCommand, context, performance.now());
+  };
+}
+
+export function createSessionDetachHandler({ runCommand = runCli } = {}) {
+  return async function detachSession(_payload, context) {
+    let stdout;
+    try {
+      stdout = await runCommand(
+        ["--json", `-s=${context.session.session_id}`, "detach"],
+        { deadlineMs: context.deadlineMs },
+      );
+    } catch (error) {
+      throw mutationFailure("DETACH", error);
+    }
     let result;
     try {
-      result = JSON.parse(stdout);
-    } catch {
+      result = parseCliJson(stdout);
+    } catch (error) {
+      throw mutationFailure("DETACH", error);
+    }
+    if (
+      result?.session !== context.session.session_id ||
+      result?.status !== "detached"
+    ) {
       throw new BoundaryError(
-        "CLI_INVALID_OUTPUT",
-        "Browser CLI returned invalid JSON",
-        { retryable: true },
+        "DETACH_OUTCOME_UNKNOWN",
+        "Browser session detach outcome is unknown",
+        {
+          outcome: "unknown_outcome",
+          retryable: false,
+          evidence: { cause_code: "UNCONFIRMED_RESULT" },
+        },
       );
     }
-    if (result === null || typeof result !== "object" || Array.isArray(result)) {
-      // valid JSON but not an object (array / number / string): a malformed payload, not drift
-      throw new BoundaryError(
-        "CLI_INVALID_OUTPUT",
-        "Browser CLI returned invalid JSON",
-        { retryable: true },
-      );
-    }
-    if (result.origin !== context.session.origin) {
-      throw new BoundaryError(
-        "NAVIGATION_DRIFT",
-        "Browser session is open on an unexpected origin",
-        { retryable: false },
-      );
-    }
-    return result;
+    return { detached: true };
   };
+}
+
+function mutationFailure(action, error) {
+  if (error instanceof BoundaryError && error.code === "CLI_UNAVAILABLE") {
+    return error;
+  }
+  return new BoundaryError(
+    `${action}_OUTCOME_UNKNOWN`,
+    `Browser session ${action.toLowerCase()} outcome is unknown`,
+    {
+      outcome: "unknown_outcome",
+      retryable: false,
+      evidence: {
+        cause_code: error instanceof BoundaryError
+          ? error.code
+          : "BOUNDARY_FAILURE",
+      },
+    },
+  );
+}
+
+async function inspectSession(runCommand, context, startedAt) {
+  const stdout = await runCommand(
+    [
+      "--raw",
+      `-s=${context.session.session_id}`,
+      "run-code",
+      SESSION_INSPECT_SOURCE,
+    ],
+    { deadlineMs: remainingDeadline(context.deadlineMs, startedAt) },
+  );
+  const result = parseCliJson(stdout);
+  if (result === null || typeof result !== "object" || Array.isArray(result)) {
+    // valid JSON but not an object (array / number / string): a malformed payload, not drift
+    throw new BoundaryError(
+      "CLI_INVALID_OUTPUT",
+      "Browser CLI returned a non-object value",
+      { retryable: true },
+    );
+  }
+  if (result.origin !== context.session.origin) {
+    throw new BoundaryError(
+      "NAVIGATION_DRIFT",
+      "Browser session is open on an unexpected origin",
+      { retryable: false },
+    );
+  }
+  return result;
+}
+
+function parseCliJson(stdout) {
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    throw new BoundaryError(
+      "CLI_INVALID_OUTPUT",
+      "Browser CLI returned invalid JSON",
+      { retryable: true },
+    );
+  }
 }
 
 function remainingDeadline(deadlineMs, startedAt) {
@@ -100,11 +195,29 @@ function remainingDeadline(deadlineMs, startedAt) {
   return remaining;
 }
 
+async function tryDetachSession(runCommand, context, startedAt) {
+  try {
+    const stdout = await runCommand(
+      ["--json", `-s=${context.session.session_id}`, "detach"],
+      { deadlineMs: remainingDeadline(context.deadlineMs, startedAt) },
+    );
+    const result = parseCliJson(stdout);
+    return (
+      result?.session === context.session.session_id &&
+      result?.status === "detached"
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function createDefaultHandlers(options = {}) {
   return {
-    "session.inspect": createSessionInspectHandler({
+    "session.attach": createSessionAttachHandler({
       ...options,
       browserOwner: options.browserOwner ?? process.env.BROWSER_OWNER_NAME,
     }),
+    "session.inspect": createSessionInspectHandler(options),
+    "session.detach": createSessionDetachHandler(options),
   };
 }
