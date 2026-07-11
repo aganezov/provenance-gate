@@ -1,0 +1,38 @@
+# The eval-harness workspace member — the Python CONTROL PLANE. Python owns scenario compilation,
+# orchestration, the read-only Operon SQL oracle, scoring, and policy; the BROWSER boundary is a Node
+# @playwright/cli subpackage (browser/) driven via subprocess + versioned JSON, NOT the Python
+# playwright package. This member does NOT import provenance-gate, and the gate never gains a dep from
+# here — that's the workspace firewall the root pyproject relies on.
+[project]
+name = "claude-science-rollouts"
+version = "0.0.1"
+description = "Browser-driven eval harness measuring the provenance gate's thesis via controlled Claude Science rollouts."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []  # control plane is near-stdlib (subprocess to the Node browser boundary); grows as
+                   # the harness lands, but never with the Python `playwright` package or `provenance-gate`.
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/claude_science_rollouts"]
+
+# Inherit the workspace-root ruff config (line-length, lint select) but resolve first-party imports
+# against THIS member's source, not the gate's — so ruff sorts `claude_science_rollouts` imports as
+# first-party. The harness is 3.11+; the root's 3.9 UP045/UP007 ignores are path-scoped to the gate
+# and never match here, so the harness uses modern syntax.
+[tool.ruff]
+extend = "../../pyproject.toml"
+src = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
