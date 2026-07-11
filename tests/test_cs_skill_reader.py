@@ -212,3 +212,15 @@ def test_chat_seeds_empty_or_unknown_root_is_empty():
     assert r.chat_seeds("proj", "") == set()         # no current frame -> no seeds (not whole proj)
     assert r.chat_seeds("proj", None) == set()
     assert r.chat_seeds("proj", "ghost") == set()    # a root that names no frame -> empty
+
+
+def test_chat_seeds_scope_by_host_emits_no_project_filter():
+    # symmetric to test_scope_by_host_emits_no_project_filter: with scope_by_host=True the reader
+    # emits NO project_id filter (host.query scopes in-CS). The fake host doesn't scope, so
+    # foreign_v1 (frame fA, project other_proj) leaks into chat A's seeds — chat_seeds defers
+    # scoping to the host, it doesn't filter itself. The self-artifact exclusion still applies.
+    conn = _chat_conn()
+    filtered = HostQueryReader(_FakeHost(conn), scope_by_host=False).chat_seeds("proj", "fA")
+    deferred = HostQueryReader(_FakeHost(conn), scope_by_host=True).chat_seeds("proj", "fA")
+    assert filtered == {"rep_v1", "qc_v1"}                  # explicit project filter drops foreign
+    assert deferred == {"rep_v1", "qc_v1", "foreign_v1"}    # host would scope; the fake doesn't

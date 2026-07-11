@@ -221,18 +221,26 @@ def _current_frame():
     return None, None
 
 
-def _current_project():
-    # Prefer the DETERMINISTIC current project — the project of the current frame (CWD-derived). Fall
-    # back to the most-recently-updated project (matching adapters/external/substrate.list_projects)
-    # when the frame can't be resolved (off a repl CWD or a legacy schema), so this never hard-fails.
-    _root, pid = _current_frame()
-    if pid:
-        rows = _HostReader().query("SELECT name FROM projects WHERE id = '" + _esc(pid) + "'")
-        return {"id": pid, "name": (rows[0].get("name") if rows else None) or pid}
+def _project_named(pid):
+    # {id, name} for a known project id (name looked up) — used once _current_frame hands us the id.
+    rows = _HostReader().query("SELECT name FROM projects WHERE id = '" + _esc(pid) + "'")
+    return {"id": pid, "name": (rows[0].get("name") if rows else None) or pid}
+
+
+def _recency_project():
+    # Fallback when there's no current frame: the most-recently-updated project (matching
+    # adapters/external/substrate.list_projects). Never hard-fails — a sentinel if projects is empty.
     rows = _HostReader().query("SELECT id, name FROM projects ORDER BY updated_at DESC LIMIT 1")
     if rows:
         return {"id": rows[0]["id"], "name": rows[0].get("name") or rows[0]["id"]}
     return {"id": "current", "name": "current"}
+
+
+def _current_project():
+    # The DETERMINISTIC current project — the current frame's project (CWD-derived); recency fallback
+    # when the frame can't be resolved (off a repl CWD or a legacy schema), so this never hard-fails.
+    _root, pid = _current_frame()
+    return _project_named(pid) if pid else _recency_project()
 
 
 def _current_project_id():
@@ -372,8 +380,8 @@ def review_chat(scope="upstream"):
     in OTHER conversations — so a divergent version created elsewhere still surfaces as a conflict here.
     No args: it resolves the current chat itself. Use review_subgraph(<names>) to scope by hand instead.
     Backed by core.review_kit; ``scope`` is a passthrough label for now (upstream cone)."""
-    proj = _current_project()
-    root, _pid = _current_frame()
+    root, pid = _current_frame()   # resolve the current conversation ONCE (root + project id together)
+    proj = _project_named(pid) if pid else _recency_project()
     if not root:
         return {"project": proj["id"], "status": "no_current_chat",
                 "next": "couldn't resolve the current conversation; use review_subgraph(<names>) to scope explicitly"}

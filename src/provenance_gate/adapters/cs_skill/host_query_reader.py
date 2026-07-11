@@ -231,6 +231,9 @@ class HostQueryReader:
         if not root_frame_id:
             return set()
         where = self._version_where(project_id, extra=f"f.root_frame_id = '{_esc(root_frame_id)}'")
+        # the INNER JOIN on frames also (intentionally) drops NULL-frame_id versions — frameless
+        # uploads aren't produced by any conversation, so they're never a chat seed (the cone
+        # reaches them upstream as sources instead).
         rows = self.host.query(
             "SELECT av.id FROM artifact_versions av "
             "JOIN artifacts a ON a.id = av.artifact_id "
