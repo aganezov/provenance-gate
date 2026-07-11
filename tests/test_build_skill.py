@@ -92,6 +92,41 @@ def test_inlined_kernel_renders_cockpit(cs_conn, tmp_path, monkeypatch):
     assert "__GRAPH__" not in html and "__PROJECT__" not in html
 
 
+def test_render_cockpit_focus_scopes_to_upstream_cone(cs_conn, tmp_path, monkeypatch):
+    # focus renders only the seed's upstream cone: the fake host reads both projects (4 nodes), but
+    # note.txt's lineage is just c0 -> c1, so the cockpit has 2 nodes.
+    monkeypatch.chdir(tmp_path)
+    ns = _exec_kernel(_FakeHost(cs_conn))
+    out = ns["render_cockpit"](focus="note.txt")
+    assert out["status"] == "rendered" and out["nodes"] == 2
+    assert out["scope"] == {"focus": "note.txt"} and out["files"] == ["cockpit.html"]
+
+
+def test_render_cockpit_focus_unresolved(cs_conn, tmp_path, monkeypatch):
+    # a focus that names nothing in the project reports it, not a silent full-graph render
+    monkeypatch.chdir(tmp_path)
+    ns = _exec_kernel(_FakeHost(cs_conn))
+    out = ns["render_cockpit"](focus="nonexistent.csv")
+    assert out["status"] == "focus_unresolved" and out["focus"] == "nonexistent.csv"
+
+
+def test_render_cockpit_empty_focus_is_unresolved(cs_conn, tmp_path, monkeypatch):
+    # an EMPTY focus ([] / "") is a request that matched nothing — must NOT silently render the
+    # whole project (that's what `if focus is not None` guards vs the old `if focus`).
+    monkeypatch.chdir(tmp_path)
+    ns = _exec_kernel(_FakeHost(cs_conn))
+    assert ns["render_cockpit"](focus=[])["status"] == "focus_unresolved"
+    assert ns["render_cockpit"](focus="")["status"] == "focus_unresolved"
+    assert ns["render_cockpit"](focus=0)["status"] == "focus_unresolved"   # off-contract; no crash
+
+
+def test_render_cockpit_full_scope_is_uniform_dict(cs_conn, tmp_path, monkeypatch):
+    # scope is always a dict; a full render carries focus=None (not the string "full")
+    monkeypatch.chdir(tmp_path)
+    ns = _exec_kernel(_FakeHost(cs_conn))
+    assert ns["render_cockpit"]()["scope"] == {"focus": None}
+
+
 def test_cockpit_escapes_every_lt_in_baked_json(cs_conn, tmp_path, monkeypatch):
     # EVERY '<' in a baked value must become < so no raw '<' can form an HTML tag inside the inline
     # <script> holding GRAPH: covers </script> AND the <!--<script> double-escape a '</'-only seal

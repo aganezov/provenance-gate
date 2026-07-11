@@ -105,15 +105,77 @@ def test_derive_prefers_authoritative_latest_over_max():
         assert a.latest_version_id == "vx1" and a.latest_version_number == 1
 
 
-def test_derive_falls_back_to_max_when_authoritative_head_unresolvable():
-    # latest_version_id points outside the fetched set (an older/filtered head we didn't load) —
-    # fall back to max(version_number) rather than dropping currency for the artifact entirely.
-    g = derive.derive_graph("proj_x", _two_versions("vx_not_fetched"), [], _TWO_CELLS, [],
-                            built_at=1.0)
+def test_derive_trusts_offset_authoritative_head():
+    # The authoritative head points OUTSIDE the fetched set — the normal subgraph-cone case, where
+    # the newer version lives on a branch the cone doesn't include. Trust the pointer: BOTH in-cone
+    # versions are correctly non-current (stale). A max(version_number) fallback would falsely crown
+    # vx2 as latest — a false CLEAN on staleness — the cone-correctness this guards. The reader's
+    # head-join carries the head number even when its row is off-cone.
+    versions = _two_versions("vx3_offcone")
+    for v in versions.values():
+        v["latest_version_number"] = 3
+    g = derive.derive_graph("proj_x", versions, [], _TWO_CELLS, [], built_at=1.0)
+    refs = {a.artifact_version_id: a for n in g.nodes for a in n.output_surface}
+    assert refs["vx1"].is_latest is False and refs["vx2"].is_latest is False   # head is off-cone
+    for a in refs.values():
+        assert a.latest_version_id == "vx3_offcone" and a.latest_version_number == 3
+
+
+def test_derive_dangling_head_falls_back_to_max():
+    # A head pointer with NO resolvable version (dangling FK: it points to a row absent from the DB,
+    # so the reader's head-join yields no number) is UNRESOLVABLE — a trust gate must not turn
+    # corrupt metadata into a certain verdict. Fall back to max(version_number) (the safe behavior),
+    # not trust the dangling id (which would flag EVERY version stale, current=None). Unlike a VALID
+    # off-cone head, which carries a join number and IS trusted (test above).
+    g = derive.derive_graph("proj_x", _two_versions("vx_dangling"), [], _TWO_CELLS, [], built_at=1)
     refs = {a.artifact_version_id: a for n in g.nodes for a in n.output_surface}
     assert refs["vx1"].is_latest is False and refs["vx2"].is_latest is True   # max fallback
     for a in refs.values():
         assert a.latest_version_id == "vx2" and a.latest_version_number == 2
+
+
+def test_derive_trusts_in_set_head_with_null_version_number():
+    # a VALID in-set head whose version_number is NULL is still RESOLVABLE (we have its row and it's
+    # the same artifact) — trust it, don't fall back to max. Only an UNRESOLVABLE off-set head (no
+    # row, no join number) falls back. Guards the B2 gate against over-firing on a NULL number.
+    versions = {
+        "vh": {"id": "vh", "artifact_id": "a_x", "version_number": None, "checksum": "h",
+               "storage_path": "p", "parent_version_id": None, "producing_cell_id": "c1",
+               "frame_id": None, "filename": "x.csv", "latest_version_id": "vh"},
+        "vo": {"id": "vo", "artifact_id": "a_x", "version_number": 1, "checksum": "o",
+               "storage_path": "p", "parent_version_id": None, "producing_cell_id": "c2",
+               "frame_id": None, "filename": "x.csv", "latest_version_id": "vh"},
+    }
+    g = derive.derive_graph("proj_x", versions, [], _TWO_CELLS, [], built_at=1)
+    refs = {a.artifact_version_id: a for n in g.nodes for a in n.output_surface}
+    assert refs["vh"].is_latest is True and refs["vo"].is_latest is False   # trust the in-set head
+    assert all(a.latest_version_id == "vh" for a in refs.values())
+
+
+def _disagree(order):
+    # two versions of a_x that DISAGREE on the head pointer (each names itself) — a corruption/
+    # concurrency artifact. Both carry a resolvable join number so the pointer path is taken.
+    rows = {
+        "vx1": {"id": "vx1", "artifact_id": "a_x", "version_number": 1, "checksum": "1",
+                "storage_path": "p", "parent_version_id": None, "producing_cell_id": "c1",
+                "frame_id": None, "filename": "x.csv",
+                "latest_version_id": "vx1", "latest_version_number": 1},
+        "vx2": {"id": "vx2", "artifact_id": "a_x", "version_number": 2, "checksum": "2",
+                "storage_path": "p", "parent_version_id": "vx1", "producing_cell_id": "c2",
+                "frame_id": None, "filename": "x.csv",
+                "latest_version_id": "vx2", "latest_version_number": 2},
+    }
+    return {vid: rows[vid] for vid in order}
+
+
+def test_derive_head_selection_deterministic_when_pointers_disagree():
+    # disagreeing head pointers must resolve identically regardless of row/scan order (not "first
+    # row wins"), so is_latest can't flip across derives of the same state.
+    a = derive.derive_graph("proj_x", _disagree(["vx1", "vx2"]), [], _TWO_CELLS, [], built_at=1)
+    b = derive.derive_graph("proj_x", _disagree(["vx2", "vx1"]), [], _TWO_CELLS, [], built_at=1)
+    la = {r.artifact_version_id: r.is_latest for n in a.nodes for r in n.output_surface}
+    lb = {r.artifact_version_id: r.is_latest for n in b.nodes for r in n.output_surface}
+    assert la == lb   # deterministic winner regardless of order
 
 
 def test_derive_ignores_cross_artifact_head():
