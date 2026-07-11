@@ -71,6 +71,20 @@ def test_request_rejects_credentials_and_non_bare_origins() -> None:
         )
 
 
+def test_request_rejects_non_canonical_origins() -> None:
+    # Python (the request builder) must reject the same non-canonical origins Node does
+    # (mixed case, default port present) rather than pass them to a Node-side rejection.
+    for origin in ("HTTP://127.0.0.1:8875", "http://LOCALHOST:8875", "http://localhost:80"):
+        with pytest.raises(BrowserProtocolError, match="bare"):
+            make_request(
+                "project.inspect",
+                request_id="request-001",
+                session_id="session-001",
+                origin=origin,
+                deadline_ms=100,
+            )
+
+
 def test_response_must_correlate_to_request() -> None:
     response = {
         "protocol_version": 1,

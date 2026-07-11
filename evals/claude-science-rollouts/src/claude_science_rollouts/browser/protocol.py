@@ -247,10 +247,23 @@ def _bounded_integer(value: object, minimum: int, maximum: int, name: str) -> in
     return value
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
 def _bare_http_origin(value: object) -> None:
     if not isinstance(value, str):
         raise BrowserProtocolError("origin must be a bare HTTP origin")
     parsed = urlsplit(value)
+    try:
+        port = parsed.port
+    except ValueError:
+        raise BrowserProtocolError("origin must be a bare credential-free HTTP origin") from None
+    # Require the input to already be canonical, matching Node's URL.origin (lowercase scheme+host,
+    # default port omitted) so Python — the request builder — rejects the same origins Node does,
+    # rather than silently passing a non-canonical origin that the Node validator later rejects.
+    canonical = f"{parsed.scheme}://{parsed.hostname}"
+    if port is not None and port != _DEFAULT_PORTS.get(parsed.scheme):
+        canonical += f":{port}"
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.hostname
@@ -260,6 +273,7 @@ def _bare_http_origin(value: object) -> None:
         or parsed.query
         or parsed.fragment
         or value.endswith("/")
+        or value != canonical
     ):
         raise BrowserProtocolError("origin must be a bare credential-free HTTP origin")
 

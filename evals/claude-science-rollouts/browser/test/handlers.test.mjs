@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   SESSION_INSPECT_SOURCE,
+  createDefaultHandlers,
   createSessionInspectHandler,
 } from "../src/handlers.mjs";
 import { BoundaryError } from "../src/protocol.mjs";
@@ -122,4 +123,49 @@ test("session inspection rejects malformed CLI output", async () => {
     handler({}, context),
     (error) => error instanceof BoundaryError && error.code === "CLI_INVALID_OUTPUT",
   );
+});
+
+test("session inspection rejects valid-JSON non-object output as malformed, not drift", async () => {
+  for (const payload of ["[1,2,3]", "42", "\"origin\""]) {
+    const handler = createSessionInspectHandler({
+      async runCommand() {
+        return payload;
+      },
+    });
+    await assert.rejects(
+      handler({}, context),
+      (error) => error instanceof BoundaryError && error.code === "CLI_INVALID_OUTPUT",
+    );
+  }
+});
+
+test("default handlers attach an owner from BROWSER_OWNER_NAME", async () => {
+  const previous = process.env.BROWSER_OWNER_NAME;
+  process.env.BROWSER_OWNER_NAME = "env-browser";
+  try {
+    const invocations = [];
+    const handlers = createDefaultHandlers({
+      async runCommand(args) {
+        invocations.push(args);
+        if (args.includes("attach")) return "attached";
+        return JSON.stringify({
+          authenticated: true,
+          origin: context.session.origin,
+          profile_ready: true,
+        });
+      },
+    });
+    const result = await handlers["session.inspect"]({}, context);
+    assert.equal(result.authenticated, true);
+    assert.deepEqual(invocations[0], [
+      "--raw",
+      "attach",
+      "env-browser",
+      "--session",
+      "session-001",
+    ]);
+  } finally {
+    if (previous === undefined) delete process.env.BROWSER_OWNER_NAME;
+    else process.env.BROWSER_OWNER_NAME = previous;
+  }
 });

@@ -69,7 +69,15 @@ export function createSessionInspectHandler({
         { retryable: true },
       );
     }
-    if (result?.origin !== context.session.origin) {
+    if (result === null || typeof result !== "object" || Array.isArray(result)) {
+      // valid JSON but not an object (array / number / string): a malformed payload, not drift
+      throw new BoundaryError(
+        "CLI_INVALID_OUTPUT",
+        "Browser CLI returned invalid JSON",
+        { retryable: true },
+      );
+    }
+    if (result.origin !== context.session.origin) {
       throw new BoundaryError(
         "NAVIGATION_DRIFT",
         "Browser session is open on an unexpected origin",

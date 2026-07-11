@@ -96,6 +96,8 @@ export function validateRequest(value) {
   if (request.operation === "session.inspect") {
     exactKeys(request.payload, [], "request.payload");
   }
+  // Redundant when reached via parseRequestText (raw text was already size-checked), but
+  // validateRequest is exported and may be called directly on an untrusted object — keep it.
   if (jsonBytes(request) > MAX_REQUEST_BYTES) {
     throw new BoundaryError(
       "REQUEST_TOO_LARGE",
