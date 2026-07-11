@@ -9,7 +9,12 @@ from __future__ import annotations
 
 import sqlite3
 
-from claude_science_rollouts.oracle import audit_project, upstream_closure
+from claude_science_rollouts.oracle import (
+    audit_project,
+    open_readonly,
+    snapshot_operon,
+    upstream_closure,
+)
 
 _SCHEMA = """
 CREATE TABLE projects(id TEXT PRIMARY KEY, name TEXT);
@@ -72,6 +77,22 @@ class _Operon:
         return audit_project(self.conn, self.pid)
 
 
+def _diamond(op: _Operon) -> tuple[str, str, str]:
+    """Build the standard version-mix diamond; return (qc v1 id, qc v2 id, merge version id)."""
+    cells = op.artifact("cells.csv")
+    qc = op.artifact("cells.qc.csv")
+    comp = op.artifact("composition.csv")
+    sig = op.artifact("signature.csv")
+    merged = op.artifact("combined_report.csv")
+    cv = op.version(cells, 1, latest=True)
+    qc1 = op.version(qc, 1, reads=[cv])
+    qc2 = op.version(qc, 2, reads=[cv], latest=True)
+    comp1 = op.version(comp, 1, reads=[qc1], latest=True)   # Branch A pins qc v1
+    sig1 = op.version(sig, 1, reads=[qc2], latest=True)     # Branch B pins qc v2
+    merge = op.version(merged, 1, reads=[comp1, sig1], latest=True)
+    return qc1, qc2, merge
+
+
 def test_linear_revision_is_clean():
     """cells.qc.csv re-versioned in place (v1 -> v2), downstream reads v2: no mix, no stale."""
     op = _Operon()
@@ -91,16 +112,7 @@ def test_linear_revision_is_clean():
 def test_version_mix_diamond_is_flagged():
     """Two branches pin different qc versions and merge: version mix at the merge node."""
     op = _Operon()
-    cells, qc = op.artifact("cells.csv"), op.artifact("cells.qc.csv")
-    comp = op.artifact("composition.csv")
-    sig = op.artifact("signature.csv")
-    merged = op.artifact("combined_report.csv")
-    cv = op.version(cells, 1, latest=True)
-    qc1 = op.version(qc, 1, reads=[cv])
-    qc2 = op.version(qc, 2, reads=[cv], latest=True)
-    comp1 = op.version(comp, 1, reads=[qc1], latest=True)   # Branch A pins qc v1
-    sig1 = op.version(sig, 1, reads=[qc2], latest=True)     # Branch B pins qc v2
-    merge = op.version(merged, 1, reads=[comp1, sig1], latest=True)
+    qc1, qc2, merge = _diamond(op)
     v = op.verdict()
     assert v.inconsistent is True
     assert len(v.mixed) == 1
@@ -109,6 +121,27 @@ def test_version_mix_diamond_is_flagged():
     assert mix.version_ids == (qc1, qc2)   # the exact pins the content cross-check consumes
     # Branch A rests on a superseded qc -> also a currency finding.
     assert any(s.artifact == "cells.qc.csv" and s.pinned == 1 and s.latest == 2 for s in v.stale)
+
+
+def test_leaf_not_hidden_by_cross_project_consumer():
+    """A consumer in another project must not hide this project's terminal node."""
+    op = _Operon()
+    _, _, merge = _diamond(op)
+    op.conn.execute("INSERT INTO projects VALUES(?,?)", ("proj_other", "other"))
+    op.conn.execute(
+        "INSERT INTO artifacts(id, project_id, filename, latest_version_id) VALUES(?,?,?,NULL)",
+        ("a_other", "proj_other", "downstream.csv"),
+    )
+    op.conn.execute(
+        "INSERT INTO artifact_versions(id, artifact_id, version_number, checksum) VALUES(?,?,?,?)",
+        ("v_other", "a_other", 1, "sha_other"),
+    )
+    op.conn.execute(
+        "INSERT INTO artifact_dependencies VALUES(?,?,?,?)", ("d_cross", "v_other", merge, None)
+    )
+    v = op.verdict()
+    assert v.inconsistent is True
+    assert v.mixed[0].merge_node == merge
 
 
 def test_same_version_merge_is_clean_control():
@@ -154,3 +187,19 @@ def test_upstream_closure_follows_dependencies_not_revisions():
     op.version(qc, 1, reads=[cv])
     qc2 = op.version(qc, 2, reads=[cv], latest=True)   # v2 revises v1 but depends on cells, not v1
     assert upstream_closure(op.conn, op.pid, qc2) == {qc2, cv}   # qc v1 is NOT reachable
+
+
+def test_snapshot_roundtrip(tmp_path):
+    """snapshot_operon copies bytes into a run dir and the frozen copy opens read-only intact."""
+    src = tmp_path / "src.db"
+    seed = sqlite3.connect(src)
+    seed.execute("CREATE TABLE t(x)")
+    seed.execute("INSERT INTO t VALUES(1)")
+    seed.commit()
+    seed.close()
+    snap = snapshot_operon(src, tmp_path / "run")
+    conn = open_readonly(snap)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 1
+    finally:
+        conn.close()

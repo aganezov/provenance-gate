@@ -29,7 +29,12 @@ def snapshot_operon(src_db: str | Path, dest_dir: str | Path) -> Path:
             shutil.copyfile(sidecar, Path(f"{dst}{suffix}"))
     conn = sqlite3.connect(dst)
     try:
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        # busy != 0 → not all WAL frames folded into the copy; dropping the sidecars would lose data
+        row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if row and row[0]:
+            raise RuntimeError(
+                f"WAL checkpoint on {dst} returned busy={row[0]}; snapshot may be incomplete"
+            )
         conn.commit()
     finally:
         conn.close()

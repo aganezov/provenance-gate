@@ -21,7 +21,7 @@ WITH RECURSIVE up(vid) AS (
     JOIN up ON up.vid = d.artifact_version_id
     JOIN artifact_versions dv ON dv.id = d.depends_on_version_id
     JOIN artifacts da ON da.id = dv.artifact_id
-    WHERE da.project_id = :pid AND d.depends_on_version_id IS NOT NULL
+    WHERE da.project_id = :pid
 )
 SELECT vid FROM up
 """

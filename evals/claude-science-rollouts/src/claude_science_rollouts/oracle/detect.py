@@ -29,15 +29,20 @@ WHERE ia.project_id = :pid
 ORDER BY ia.filename, cv.id
 """
 
-# Terminal versions in the project: not consumed by any dependency edge. The subquery filters
-# NULLs so a NULL in the IN-list can't turn ``NOT IN`` into UNKNOWN for every row.
+# Terminal versions: project versions with no in-project consumer. Scoping the subquery to this
+# project's consumers stops a cross-project edge hiding a terminal node; the NULL filter keeps a
+# NULL from turning ``NOT IN`` into UNKNOWN for every row.
 _LEAVES = """
 SELECT av.id
 FROM artifact_versions av JOIN artifacts a ON a.id = av.artifact_id
 WHERE a.project_id = :pid
   AND av.id NOT IN (
-      SELECT depends_on_version_id FROM artifact_dependencies
-      WHERE depends_on_version_id IS NOT NULL
+      SELECT d.depends_on_version_id
+      FROM artifact_dependencies d
+      JOIN artifact_versions cv ON cv.id = d.artifact_version_id
+      JOIN artifacts         ca ON ca.id = cv.artifact_id
+      WHERE ca.project_id = :pid
+        AND d.depends_on_version_id IS NOT NULL
   )
 ORDER BY av.id
 """
@@ -76,7 +81,7 @@ def find_version_mix(conn: sqlite3.Connection, project_id: str) -> list[MixFindi
         closure = upstream_closure(conn, project_id, leaf)
         if len(closure) < 2:
             continue
-        sql = _CLOSURE_VERSIONS.format(placeholders=",".join("?" * len(closure)))
+        sql = _CLOSURE_VERSIONS.format(placeholders=",".join(["?"] * len(closure)))
         by_artifact: dict[tuple[str, str], dict[int, str]] = {}
         for r in conn.execute(sql, tuple(closure)):
             by_artifact.setdefault((r["artifact_id"], r["filename"]), {}).setdefault(
