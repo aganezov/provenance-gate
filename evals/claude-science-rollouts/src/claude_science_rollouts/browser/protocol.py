@@ -20,7 +20,9 @@ MAX_DEADLINE_MS = 900_000
 
 OPERATIONS = frozenset(
     {
+        "session.attach",
         "session.inspect",
+        "session.detach",
         "project.inspect",
         "project.create",
         "attachment.upload",
@@ -115,8 +117,8 @@ def make_request(
     _bare_http_origin(origin)
     _bounded_integer(deadline_ms, 1, MAX_DEADLINE_MS, "deadline_ms")
     _reject_credential_keys(body, "payload")
-    if operation == "session.inspect" and body:
-        raise BrowserProtocolError("session.inspect payload must be empty")
+    if operation in {"session.attach", "session.inspect", "session.detach"} and body:
+        raise BrowserProtocolError(f"{operation} payload must be empty")
     request = BrowserRequest(
         request_id=request_id,
         operation=operation,
@@ -181,7 +183,12 @@ def parse_response(text: str, request: BrowserRequest) -> BrowserResponse:
 
 
 def _validate_operation_result(operation: str, result: Mapping[str, Any]) -> None:
-    if operation != "session.inspect":
+    if operation == "session.detach":
+        _exact_keys(result, {"detached"}, set(), "response.result")
+        if not isinstance(result["detached"], bool):
+            raise BrowserProtocolError("response.result.detached must be boolean")
+        return
+    if operation not in {"session.attach", "session.inspect"}:
         return
     _exact_keys(
         result,

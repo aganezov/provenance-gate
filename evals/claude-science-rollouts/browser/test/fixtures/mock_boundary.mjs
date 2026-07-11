@@ -5,11 +5,17 @@ import { fileURLToPath } from "node:url";
 import { runMain } from "../../src/main.mjs";
 
 const handlers = {
+  "session.attach": async (_payload, context) => ({
+    authenticated: true,
+    origin: context.session.origin,
+    profile_ready: true,
+  }),
   "session.inspect": async (_payload, context) => ({
     authenticated: true,
     origin: context.session.origin,
     profile_ready: true,
   }),
+  "session.detach": async () => ({ detached: true }),
 };
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
