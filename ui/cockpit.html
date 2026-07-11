@@ -347,7 +347,7 @@ html[data-theme="dark"] .frame{ background:color-mix(in oklab, var(--ink) 4%, tr
    rendered inside CS (SNAPSHOT sets .in-cs on <html>), keep our controls out of those two corners so
    nothing is hidden — matters most in the narrow side-panel view. Standalone (live server) is untouched. */
 .in-cs .hud{ left:14px; right:auto; }             /* bottom-left, clear of CS Fit-width + zoom */
-.in-cs .hdr{ padding-right:104px; }               /* reserve the top-right corner for CS's Annotate pill */
+.in-cs .hdr{ padding-right:104px; }               /* reserve the top-right for CS's Annotate pill (external chrome we can't measure); 104px empirically clears it in the side view — re-tune if CS resizes that pill */
 @media (max-width:720px){ .in-cs .readonly{ display:none; } }  /* narrow side-view: drop the rightmost label */
 
 /* empty state */
