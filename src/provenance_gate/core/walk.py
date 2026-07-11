@@ -6,7 +6,7 @@ depend on; downstream = the versions that depend on them). This module only iter
 fixpoint. Keeping the walk pure and reader-agnostic is what lets the external substrate and the
 in-CS kernel share ONE traversal (and lets it inline into the skill kernel like derive/audit).
 
-The direction and the SQL live in the adapter's ``expand``; ``depth`` is the only knob here.
+The direction and the SQL live in the adapter's ``expand``; ``max_depth`` is the only knob here.
 ``max_depth=None`` walks to the end of the frontier (the full cone).
 """
 

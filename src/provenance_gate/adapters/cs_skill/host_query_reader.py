@@ -10,7 +10,8 @@ calls the identical derive — the convergence point with the CS ``merge-lineage
 row shape) into it, tests pass a fake backed by sqlite. Grounded in the live merge-lineage-audit
 skill (host.query proven). Scoping is a constructor choice: external/tests filter by ``project_id``;
 in CS pass ``scope_by_host=True`` to rely on host.query's ``scope="project"`` (how the proven
-merge-lineage-audit skill isolates a project). Large ``IN`` lists aren't chunked yet (TODO).
+merge-lineage-audit skill isolates a project). Large ``IN`` lists are chunked (``_chunked``, the
+host.query analogue of ``substrate._chunked_in``) so a big cone can't blow the statement size.
 """
 
 from __future__ import annotations
@@ -36,9 +37,11 @@ def _esc(v: object) -> str:
 
 
 def _in(ids) -> str:
-    """A quoted, comma-joined ``IN`` list (``''`` when empty so the SQL stays valid)."""
+    """A quoted, comma-joined ``IN`` list. Empty -> ``NULL`` (``x IN (NULL)`` matches nothing — the
+    safe no-match sentinel; ``''`` would wrongly match an empty-string id). Callers guard empty via
+    ``_chunked``, so this is defensive."""
     ids = tuple(ids)
-    return ",".join("'" + _esc(i) + "'" for i in ids) if ids else "''"
+    return ",".join("'" + _esc(i) + "'" for i in ids) if ids else "NULL"
 
 
 # The skill's OWN render outputs (render_cockpit writes + save_artifacts these). Excluded from every

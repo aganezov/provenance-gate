@@ -58,7 +58,11 @@ def _latest_by_artifact(versions: dict[str, dict]) -> dict[str, tuple]:
         if in_set is not None:
             if in_set["artifact_id"] == aid:                 # resolvable in-set head, same artifact
                 head[aid] = (ptr, in_set["version_number"])  # trust it (its own number may be NULL)
-            continue  # an in-set head of a DIFFERENT artifact is a bad FK — fall through to max
+            # else: an in-set head of a DIFFERENT artifact is a bad FK — reject, fall to max.
+            # Skipping the off-set num check is deliberate: any latest_version_number here is either
+            # NULL (the reader's head-join is constrained to head.artifact_id = a.id) or a foreign
+            # number we would not trust anyway — nothing safe to read.
+            continue
         # off-set head: trust ONLY when the head-join resolved a number (a real same-artifact head
         # row exists; the join is constrained to head.artifact_id = a.id). No number => dangling or
         # cross-artifact: unresolvable, so fall through to max.
