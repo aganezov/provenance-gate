@@ -19,7 +19,9 @@ CREATE TABLE artifact_versions(
 CREATE TABLE artifact_dependencies(
     artifact_version_id TEXT, depends_on_version_id TEXT, reference_name TEXT);
 CREATE TABLE execution_log(id TEXT, frame_id TEXT, cell_index INTEGER, source TEXT);
-CREATE TABLE frames(id TEXT, task_summary TEXT, name TEXT, parent_frame_id TEXT);
+CREATE TABLE frames(
+    id TEXT, task_summary TEXT, name TEXT, parent_frame_id TEXT,
+    root_frame_id TEXT, project_id TEXT);
 """
 
 
@@ -32,9 +34,16 @@ def cs_conn() -> sqlite3.Connection:
         ("proj_smoke", "drive-smoke-test", 200),
         ("proj_upload", "upload-demo", 100),
     ])
-    c.executemany("INSERT INTO frames VALUES(?,?,?,?)", [
-        ("fd041418", "Compute Normal Distribution Statistics", "Normal stats", None),
-        ("f2", "Process upload", "Upload", None),
+    # root_frame_id = the conversation (a top-level chat's frame is its own root); project_id is
+    # its project — both real operon columns the chat-scoped review resolves the current chat by.
+    c.executemany("INSERT INTO frames VALUES(?,?,?,?,?,?)", [
+        ("fd041418", "Compute Normal Distribution Statistics", "Normal stats", None,
+         "fd041418", "proj_smoke"),
+        ("f2", "Process upload", "Upload", None, "f2", "proj_upload"),
+        ("f_empty", "Idle chat", "Idle", None, "f_empty", "proj_smoke"),  # a chat that made nothing
+        # an empty chat in proj_upload (NOT the recency winner) — pins that the current project is
+        # resolved from the FRAME, not the recency heuristic (which would pick proj_smoke).
+        ("f_empty_up", "Idle upload chat", "Idle up", None, "f_empty_up", "proj_upload"),
     ])
     c.executemany("INSERT INTO execution_log VALUES(?,?,?,?)", [
         ("c0", "fd041418", 0, "np.random.seed(42); ... write stats.csv"),

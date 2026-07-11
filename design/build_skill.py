@@ -167,7 +167,8 @@ def _kernel_source() -> str:
         + "\n\ndef pg_impl(host):\n"
         + textwrap.indent(nested, "    ")
         + '\n    return {"audit_project": audit_project, "audit_input_lineage": audit_input_lineage,'
-        + '\n            "render_cockpit": render_cockpit, "review_subgraph": review_subgraph}\n'
+        + '\n            "render_cockpit": render_cockpit, "review_subgraph": review_subgraph,'
+        + '\n            "review_chat": review_chat}\n'
         + WRAPPERS
     ).replace(", slots=True", "").replace("__SKILL_NAME__", SKILL_NAME)
 
@@ -200,9 +201,34 @@ def _reader():
     return HostQueryReader(_HostReader(), scope_by_host=True)
 
 
+def _current_frame():
+    """The current conversation, from the CS repl kernel's CWD: its basename IS the current frame id;
+    resolve it to (root_frame_id, project_id). root_frame_id is the whole conversation — a delegated
+    sub-agent frame still maps to its chat's root — and project_id is a DETERMINISTIC current project.
+    Returns (None, None) when it can't resolve (not a repl CWD, an unknown id, or a legacy schema
+    without these columns), so callers fall back to the heuristic project or report no current chat."""
+    import os
+    fid = os.path.basename(os.getcwd())
+    if not fid:
+        return None, None
+    try:
+        rows = _HostReader().query(
+            "SELECT root_frame_id, project_id FROM frames WHERE id = '" + _esc(fid) + "'")
+    except Exception:
+        return None, None
+    if rows:
+        return rows[0].get("root_frame_id") or fid, rows[0].get("project_id")
+    return None, None
+
+
 def _current_project():
-    # ORDER BY so the pick is deterministic if host.query ever hands back >1 project (name is shown in
-    # the cockpit header now); most-recently-updated, matching adapters/external/substrate.list_projects.
+    # Prefer the DETERMINISTIC current project — the project of the current frame (CWD-derived). Fall
+    # back to the most-recently-updated project (matching adapters/external/substrate.list_projects)
+    # when the frame can't be resolved (off a repl CWD or a legacy schema), so this never hard-fails.
+    _root, pid = _current_frame()
+    if pid:
+        rows = _HostReader().query("SELECT name FROM projects WHERE id = '" + _esc(pid) + "'")
+        return {"id": pid, "name": (rows[0].get("name") if rows else None) or pid}
     rows = _HostReader().query("SELECT id, name FROM projects ORDER BY updated_at DESC LIMIT 1")
     if rows:
         return {"id": rows[0]["id"], "name": rows[0].get("name") or rows[0]["id"]}
@@ -337,6 +363,28 @@ def review_subgraph(nodes, scope="upstream"):
         return {"project": proj["id"], "status": "seeds_unresolved", "nodes": nodes,
                 "next": "none matched an artifact/version in this project; check the names/ids"}
     return review_kit(g, scope)
+
+
+def review_chat(scope="upstream"):
+    """A deterministic review brief scoped to THIS conversation: seed it with the artifacts this chat
+    produced, then read their UPSTREAM cone and hand back the evidence (flagged conflicts, lineage,
+    inventory, cells). The seeds are just this chat's outputs, but the cone + audit reach versions made
+    in OTHER conversations — so a divergent version created elsewhere still surfaces as a conflict here.
+    No args: it resolves the current chat itself. Use review_subgraph(<names>) to scope by hand instead.
+    Backed by core.review_kit; ``scope`` is a passthrough label for now (upstream cone)."""
+    proj = _current_project()
+    root, _pid = _current_frame()
+    if not root:
+        return {"project": proj["id"], "status": "no_current_chat",
+                "next": "couldn't resolve the current conversation; use review_subgraph(<names>) to scope explicitly"}
+    reader = _reader()
+    seeds = reader.chat_seeds(proj["id"], root)
+    if not seeds:
+        return {"project": proj["id"], "status": "chat_empty", "root_frame": root,
+                "next": "this conversation has produced no artifacts yet — nothing to review"}
+    kit = review_kit(reader.read_graph(proj["id"], seeds=seeds), scope)
+    kit["chat_scoped"] = True
+    return kit
 '''
 
 
@@ -359,6 +407,10 @@ def review_subgraph(nodes, scope="upstream"):
     return pg_impl(host)["review_subgraph"](nodes, scope)
 
 
+def review_chat(scope="upstream"):
+    return pg_impl(host)["review_chat"](scope)
+
+
 def pg_dev_sync():
     """DEV ONLY: resync this skill's files from ~/pg-share (build_skill --share) via host.skills.edit,
     then start a fresh conversation to load them. Strip before distributing."""
@@ -378,7 +430,7 @@ def pg_dev_sync():
 
 SKILL_MD = '''---
 name: __SKILL_NAME__
-description: Deterministic trust audit over the current Claude Science project's provenance DAG. Call audit_project() for a per-cell verdict (which computations consume a stale input or merge two live versions of one artifact), audit_input_lineage(files) before writing an output to check its inputs' lineage, or review_subgraph(nodes) for a deterministic evidence brief over a chosen lineage subgraph to ground a review. Use when reasoning about whether a result is built on current, consistent upstream data.
+description: Deterministic trust audit over the current Claude Science project's provenance DAG. Call audit_project() for a per-cell verdict (which computations consume a stale input or merge two live versions of one artifact), audit_input_lineage(files) before writing an output to check its inputs' lineage, review_chat() for an evidence brief scoped to what THIS conversation produced, or review_subgraph(nodes) for a brief over a hand-picked lineage subgraph to ground a review. Use when reasoning about whether a result is built on current, consistent upstream data.
 ---
 
 # __SKILL_NAME__
@@ -401,13 +453,18 @@ Deterministic, claim-level provenance audit for the current project. Two helpers
   **upstream lineage cone** — everything it transitively depends on — instead of the whole project;
   the verdicts stay certain (a newer version off the cone is still flagged stale). A filename seeds
   every version of that artifact.
-- **`review_subgraph(nodes, scope="upstream")`** — a deterministic **review brief** over a chosen
-  lineage subgraph. Pass the nodes to review (a filename / artifact id / version id, or a list); it
-  resolves them to seeds, reads their upstream cone, and returns the evidence: the flagged conflicts
-  (`stale_input` / `version_mix`), the lineage as consumption edges, the artifact inventory
-  (filename · version · checksum · is-latest), the raw-input boundary, and the cell ids to fetch
-  producing code for. It fixes WHAT to look at — you do the reasoning and may walk deeper with your
-  own tools. Use it to ground a review instead of free-exploring the graph.
+- **`review_chat(scope="upstream")`** — the same **review brief**, but scoped to THIS conversation:
+  no args needed, it seeds from the artifacts this chat produced and reads their upstream cone. The
+  cone and audit still reach versions made in *other* conversations, so a divergent version created
+  elsewhere surfaces here as a conflict — the chat is the entry point, not a blindfold. Use it for a
+  quick "is what I just made trustworthy?" without naming files.
+- **`review_subgraph(nodes, scope="upstream")`** — the same brief over a **hand-picked** subgraph.
+  Pass the nodes to review (a filename / artifact id / version id, or a list); it resolves them to
+  seeds, reads their upstream cone, and returns the evidence: the flagged conflicts (`stale_input` /
+  `version_mix`), the lineage as consumption edges, the artifact inventory (filename · version ·
+  checksum · is-latest), the raw-input boundary, and the cell ids to fetch producing code for. It
+  fixes WHAT to look at — you do the reasoning and may walk deeper with your own tools. Use it when
+  you want to scope by hand instead of by conversation.
 
 All are computed from provenance alone (nothing stored) and are deterministic. A linear revision chain
 (reading v1 to write v2) is a supersession, not a conflict, and is not flagged.

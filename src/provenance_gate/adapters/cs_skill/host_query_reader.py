@@ -221,3 +221,19 @@ class HostQueryReader:
             ),
         )
         return {r["id"] for r in rows}
+
+    def chat_seeds(self, project_id: str, root_frame_id) -> set:
+        """Version ids created in the CURRENT conversation — versions whose frame is in the tree
+        sharing ``root_frame_id`` — the seeds for a chat-scoped review. read_graph then walks their
+        cone and audit reaches versions made in OTHER conversations (a divergent version elsewhere
+        is exactly the conflict). Excludes the skill's own render outputs and applies project scope
+        via the shared ``_version_where`` (host in-CS, else explicit)."""
+        if not root_frame_id:
+            return set()
+        where = self._version_where(project_id, extra=f"f.root_frame_id = '{_esc(root_frame_id)}'")
+        rows = self.host.query(
+            "SELECT av.id FROM artifact_versions av "
+            "JOIN artifacts a ON a.id = av.artifact_id "
+            "JOIN frames f ON f.id = av.frame_id" + where
+        )
+        return {r["id"] for r in rows}
