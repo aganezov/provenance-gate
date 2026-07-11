@@ -32,7 +32,9 @@ def _short(checksum: str) -> str:
 
 
 def _name(ref) -> str:
-    return ref.filename or ""   # CS keeps NULL-filename versions; a None here must not break sorts
+    # CS keeps NULL-filename versions; give them a stable, DISTINCT label (not a bare "") so a None
+    # can't break sorts AND two unnamed terminals don't collapse to one entry in focus.
+    return ref.filename or ("(unnamed " + ref.artifact_version_id[:8] + ")")
 
 
 def review_kit(graph: Graph, scope: str = "upstream") -> dict:
@@ -77,7 +79,8 @@ def review_kit(graph: Graph, scope: str = "upstream") -> dict:
         key=lambda r: (r["artifact"], r["version"] or 0),
     )
 
-    cells = sorted(n.cs_cell_id or n.id for n in graph.nodes if n.kind == "computation")
+    cells = sorted((n.cs_cell_id if n.cs_cell_id is not None else n.id)
+                   for n in graph.nodes if n.kind == "computation")
 
     return {
         "scope": scope,

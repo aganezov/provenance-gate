@@ -128,11 +128,18 @@ def _null_filename_records():
 
 
 def test_null_filename_does_not_crash_the_sort():
-    # sorted([None, "real.csv"]) would raise TypeError; review_kit must coerce None -> "". (bug A)
+    # sorted([None, ...]) would raise TypeError; NULL filenames get a distinct label. (bug A)
     g = derive.derive_graph("p", *_null_filename_records(), built_at=1.0)
     kit = review_kit(g)  # must not raise
-    assert kit["focus"] == ["", "real.csv"]
-    assert any(a["filename"] == "" for a in kit["artifacts"])
+    assert kit["focus"] == ["(unnamed nameless)", "real.csv"]
+    assert any(a["filename"].startswith("(unnamed ") for a in kit["artifacts"])
+
+
+def test_two_unnamed_terminals_do_not_collapse():
+    # two distinct NULL-filename terminals must BOTH survive in focus, not dedup to a single ""
+    versions = {"u1": _v("u1", "a_u1", 1, "c1", None), "u2": _v("u2", "a_u2", 1, "c1", None)}
+    g = derive.derive_graph("p", versions, [], {"c1": _cell("c1", 1)}, _FRAME, built_at=1.0)
+    assert review_kit(g)["focus"] == ["(unnamed u1)", "(unnamed u2)"]
 
 
 def test_empty_graph_is_a_valid_empty_kit():
