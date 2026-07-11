@@ -11,7 +11,9 @@ parity fixtures carry no self-artifacts, so the two agree; test_reader_excludes_
 pins the in-CS-only exclusion separately.
 """
 
-from provenance_gate.adapters.cs_skill.host_query_reader import HostQueryReader
+import sqlite3
+
+from provenance_gate.adapters.cs_skill.host_query_reader import SELF_ARTIFACTS, HostQueryReader
 from provenance_gate.adapters.external import substrate
 
 
@@ -158,3 +160,67 @@ def test_scope_by_host_emits_no_project_filter(cs_conn):
     deferred = HostQueryReader(h, scope_by_host=True).read_project_graph("proj_smoke")
     assert len(filtered.nodes) == 2                        # proj_smoke only (project_id filter)
     assert len(deferred.nodes) == len(filtered.nodes) + 2  # + proj_upload's source + cell
+
+
+# ---- chat_seeds: the seed frontier for a chat-scoped review ----
+
+def _chat_conn() -> sqlite3.Connection:
+    """A tiny operon shaped for chat scoping — frames carry ``root_frame_id`` and versions carry the
+    ``frame_id`` they were created in (columns the shared cs_conn fixture omits). Models the moat:
+    ``report.csv`` has v1 made in chat A and a DIVERGENT v2 made in chat B."""
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    c.executescript(
+        "CREATE TABLE artifacts(id TEXT, project_id TEXT, filename TEXT);"
+        "CREATE TABLE artifact_versions(id TEXT, artifact_id TEXT, frame_id TEXT);"
+        "CREATE TABLE frames(id TEXT, root_frame_id TEXT);"
+    )
+    c.executemany("INSERT INTO frames VALUES(?,?)", [
+        ("fA", "fA"),          # chat A's root frame
+        ("fA_child", "fA"),    # a delegated sub-agent frame inside chat A (shares the root)
+        ("fB", "fB"),          # chat B's root frame
+    ])
+    c.executemany("INSERT INTO artifacts VALUES(?,?,?)", [
+        ("a_rep", "proj", "report.csv"),
+        ("a_qc", "proj", "qc.csv"),
+        ("a_self", "proj", sorted(SELF_ARTIFACTS)[0]),   # a skill render output
+        ("a_foreign", "other_proj", "report.csv"),        # same name, DIFFERENT project
+    ])
+    c.executemany("INSERT INTO artifact_versions VALUES(?,?,?)", [
+        ("rep_v1", "a_rep", "fA"),          # report v1 produced in chat A
+        ("rep_v2", "a_rep", "fB"),          # report v2 produced in chat B (the divergent version)
+        ("qc_v1", "a_qc", "fA_child"),      # qc produced in chat A's sub-agent frame
+        ("self_v1", "a_self", "fA"),        # a cockpit render output in chat A (must be excluded)
+        ("foreign_v1", "a_foreign", "fA"),  # frame is chat A but the artifact is another project
+    ])
+    c.commit()
+    return c
+
+
+def test_chat_seeds_scopes_to_the_conversation():
+    # chat A's seeds = versions CREATED in chat A (incl. its sub-agent frame), self-render excluded,
+    # foreign-project version dropped by the project filter. Crucially rep_v2 — the DIVERGENT
+    # version made in chat B — is NOT a seed: it is the cross-chat conflict read_graph+audit must
+    # surface, not something the chat itself produced.
+    r = HostQueryReader(_FakeHost(_chat_conn()))   # scope_by_host=False -> project_id filter on
+    assert r.chat_seeds("proj", "fA") == {"rep_v1", "qc_v1"}
+    assert r.chat_seeds("proj", "fB") == {"rep_v2"}
+
+
+def test_chat_seeds_empty_or_unknown_root_is_empty():
+    r = HostQueryReader(_FakeHost(_chat_conn()))
+    assert r.chat_seeds("proj", "") == set()         # no current frame -> no seeds (not whole proj)
+    assert r.chat_seeds("proj", None) == set()
+    assert r.chat_seeds("proj", "ghost") == set()    # a root that names no frame -> empty
+
+
+def test_chat_seeds_scope_by_host_emits_no_project_filter():
+    # symmetric to test_scope_by_host_emits_no_project_filter: with scope_by_host=True the reader
+    # emits NO project_id filter (host.query scopes in-CS). The fake host doesn't scope, so
+    # foreign_v1 (frame fA, project other_proj) leaks into chat A's seeds — chat_seeds defers
+    # scoping to the host, it doesn't filter itself. The self-artifact exclusion still applies.
+    conn = _chat_conn()
+    filtered = HostQueryReader(_FakeHost(conn), scope_by_host=False).chat_seeds("proj", "fA")
+    deferred = HostQueryReader(_FakeHost(conn), scope_by_host=True).chat_seeds("proj", "fA")
+    assert filtered == {"rep_v1", "qc_v1"}                  # explicit project filter drops foreign
+    assert deferred == {"rep_v1", "qc_v1", "foreign_v1"}    # host would scope; the fake doesn't

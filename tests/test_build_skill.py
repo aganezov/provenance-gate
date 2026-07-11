@@ -137,6 +137,86 @@ def test_inlined_kernel_review_subgraph_unresolved(cs_conn):
     assert ns["review_subgraph"]("nonexistent.csv")["status"] == "seeds_unresolved"
 
 
+def test_inlined_kernel_review_chat(cs_conn, tmp_path, monkeypatch):
+    # review_chat resolves the current conversation from the CWD basename (= the frame id), seeds
+    # from what THIS chat produced, and returns review_kit's brief. fd041418 made stats.csv ->
+    # note.txt, so its chat cone is the same 2 nodes review_subgraph('note.txt') reads.
+    chat = tmp_path / "fd041418"      # CWD basename = the current frame id (chat fd041418)
+    chat.mkdir()
+    monkeypatch.chdir(chat)
+    ns = _exec_kernel(_FakeHost(cs_conn))
+    kit = ns["review_chat"]()
+    assert kit["scope"] == "upstream" and kit["nodes"] == 2
+    assert "note.txt" in kit["focus"] and kit["chat_scoped"] is True
+    for key in ("flags", "lineage", "artifacts", "boundary", "cells", "question"):
+        assert key in kit
+
+
+def test_inlined_kernel_review_chat_no_current_chat(cs_conn, tmp_path, monkeypatch):
+    # a CWD whose basename matches no frame -> can't resolve the conversation; say so, don't
+    # silently fall back to a whole-project review under a chat-scoped name.
+    monkeypatch.chdir(tmp_path)       # random pytest tmp name -> matches no frame
+    ns = _exec_kernel(_FakeHost(cs_conn))
+    assert ns["review_chat"]()["status"] == "no_current_chat"
+
+
+def test_inlined_kernel_review_chat_empty(cs_conn, tmp_path, monkeypatch):
+    # a real conversation that produced nothing -> chat_empty (not a spurious brief). f_empty is a
+    # frame with no artifact versions.
+    chat = tmp_path / "f_empty"
+    chat.mkdir()
+    monkeypatch.chdir(chat)
+    ns = _exec_kernel(_FakeHost(cs_conn))
+    out = ns["review_chat"]()
+    assert out["status"] == "chat_empty" and out["root_frame"] == "f_empty"
+
+
+def test_review_chat_project_is_frame_derived_not_recency(cs_conn, tmp_path, monkeypatch):
+    # the deterministic-project fix: the current project comes from the FRAME, not the recency
+    # heuristic. f_empty_up is a proj_upload chat; proj_smoke (updated_at 200 > 100) is the recency
+    # winner. So the reported project == proj_upload PROVES it was resolved from the frame — a
+    # regression that fell back to recency would report proj_smoke here.
+    chat = tmp_path / "f_empty_up"
+    chat.mkdir()
+    monkeypatch.chdir(chat)
+    out = _exec_kernel(_FakeHost(cs_conn))["review_chat"]()
+    assert out["status"] == "chat_empty" and out["project"] == "proj_upload"
+
+
+class _FramesQueryRaises(_FakeHost):
+    """A host whose ``frames`` lookup fails — stands in for a legacy operon without root_frame_id /
+    project_id columns (the _current_frame try/except path)."""
+
+    def query(self, sql, scope=None):
+        if "FROM frames" in sql:
+            raise RuntimeError("no such column: root_frame_id")
+        return super().query(sql, scope)
+
+
+def test_review_chat_degrades_when_frame_lookup_fails(cs_conn, tmp_path, monkeypatch):
+    # _current_frame's try/except must swallow a frames-query error and return (None, None) so
+    # review_chat declines gracefully (no_current_chat) instead of propagating the exception.
+    chat = tmp_path / "fd041418"
+    chat.mkdir()
+    monkeypatch.chdir(chat)
+    out = _exec_kernel(_FramesQueryRaises(cs_conn))["review_chat"]()
+    assert out["status"] == "no_current_chat"   # graceful decline, not a crash
+
+
+def test_review_chat_survives_getcwd_failure(cs_conn, monkeypatch):
+    # _current_frame's docstring promises (None, None) on failure — a raising os.getcwd() (a deleted
+    # or unmounted CWD) must degrade to no_current_chat, not propagate. Guards the getcwd-inside-try
+    # fix: with getcwd outside the guard, this would raise instead.
+    import os
+
+    def _boom():
+        raise OSError("cwd gone")
+
+    monkeypatch.setattr(os, "getcwd", _boom)
+    out = _exec_kernel(_FakeHost(cs_conn))["review_chat"]()
+    assert out["status"] == "no_current_chat"
+
+
 def test_render_cockpit_full_scope_is_uniform_dict(cs_conn, tmp_path, monkeypatch):
     # scope is always a dict; a full render carries focus=None (not the string "full")
     monkeypatch.chdir(tmp_path)
