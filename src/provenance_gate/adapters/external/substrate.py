@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from ...core import derive
+from ...core import derive, walk
 from ...core.model import Graph
 
 
@@ -29,33 +29,49 @@ def list_projects(conn: sqlite3.Connection) -> list[dict[str, str]]:
     return [{"id": r["id"], "name": r["name"]} for r in rows]
 
 
-def _chunked_in(conn: sqlite3.Connection, sql: str, ids) -> list[sqlite3.Row]:
+def _chunked_in(conn: sqlite3.Connection, sql: str, ids, prefix_params=()) -> list[sqlite3.Row]:
     """Run ``sql`` (one ``{q}`` IN placeholder) over ids in batches, concatenating rows. Keeps each
-    statement under SQLITE_MAX_VARIABLE_NUMBER so large projects still derive."""
+    statement under SQLITE_MAX_VARIABLE_NUMBER so large projects still derive. ``prefix_params`` are
+    bound before each chunk's ids (e.g. a project_id scoping the IN list)."""
     ids = tuple(ids)
     rows: list[sqlite3.Row] = []
     for i in range(0, len(ids), 900):
         chunk = ids[i:i + 900]
-        rows.extend(conn.execute(sql.format(q=",".join("?" * len(chunk))), chunk).fetchall())
+        stmt = sql.format(q=",".join("?" * len(chunk)))
+        rows.extend(conn.execute(stmt, (*prefix_params, *chunk)).fetchall())
     return rows
 
 
+# Shared version projection. Every row carries the artifact's authoritative head id AND its number
+# (via the head-join), so core.derive judges currency straight off the row — correct even when the
+# head version's OWN row is outside the fetched set (a subgraph cone: the newer version lives on a
+# branch the cone doesn't include). The full read and the seeded cone read differ only in the WHERE.
+_VERSION_SELECT = (
+    "SELECT av.id, av.artifact_id, av.version_number, av.checksum, av.storage_path, "
+    "av.parent_version_id, av.producing_cell_id, av.frame_id, a.filename, "
+    "a.latest_version_id, head.version_number AS latest_version_number "
+    "FROM artifact_versions av "
+    "JOIN artifacts a ON a.id = av.artifact_id "
+    # head-join constrained to the SAME artifact: a cross-artifact/cross-project head FK resolves to
+    # NULL, so core.derive treats it as unresolvable and falls to max — no foreign number leaks in.
+    "LEFT JOIN artifact_versions head ON head.id = a.latest_version_id AND head.artifact_id = a.id"
+)
+
+
 def fetch_versions(conn: sqlite3.Connection, project_id: str) -> dict[str, dict]:
-    """Artifact versions in the project as plain dicts, keyed by version id (filename joined)."""
-    return {
-        r["id"]: dict(r)
-        for r in conn.execute(
-            """
-            SELECT av.id, av.artifact_id, av.version_number, av.checksum, av.storage_path,
-                   av.parent_version_id, av.producing_cell_id, av.frame_id, a.filename,
-                   a.latest_version_id
-            FROM artifact_versions av
-            JOIN artifacts a ON a.id = av.artifact_id
-            WHERE a.project_id = ?
-            """,
-            (project_id,),
-        )
-    }
+    """Every artifact version in the project as plain dicts, keyed by version id."""
+    rows = conn.execute(_VERSION_SELECT + " WHERE a.project_id = ?", (project_id,))
+    return {r["id"]: dict(r) for r in rows}
+
+
+def fetch_versions_by_ids(conn: sqlite3.Connection, project_id: str, vids) -> dict[str, dict]:
+    """A specific set of versions (a cone closure) as plain dicts, keyed by version id. Scoped to
+    ``project_id`` so a cone that closes over a cross-project dependency edge can't leak foreign
+    artifacts into a graph labelled for this project (the full read is project-scoped too)."""
+    rows = _chunked_in(
+        conn, _VERSION_SELECT + " WHERE a.project_id = ? AND av.id IN ({q})", vids, (project_id,)
+    )
+    return {r["id"]: dict(r) for r in rows}
 
 
 def fetch_deps(conn: sqlite3.Connection, vids: tuple[str, ...]) -> list[dict]:
@@ -93,13 +109,16 @@ def fetch_frames(conn: sqlite3.Connection, frame_ids: set[str]) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def read_project_graph(conn: sqlite3.Connection, project_id: str) -> Graph:
-    """Fetch this project's rows and derive its immutable Graph (pure derive in ``core.derive``).
+def _derive_from_versions(
+    conn: sqlite3.Connection, project_id: str, versions: dict[str, dict]
+) -> Graph:
+    """Shared tail: given the project's fetched version records, fetch their deps/cells/frames and
+    derive the immutable Graph (pure derive in ``core.derive``). The full-project read and a seeded
+    cone read differ ONLY in which versions they fetch; everything from here down is identical.
 
     Frames are fetched for every version/cell frame id (a superset of what nodes reference); the
     derive keeps only the referenced ones, so the output matches a node-scoped fetch exactly.
     """
-    versions = fetch_versions(conn, project_id)
     if not versions:
         return derive.empty_graph(project_id)
     deps = fetch_deps(conn, tuple(versions))
@@ -108,6 +127,66 @@ def read_project_graph(conn: sqlite3.Connection, project_id: str) -> Graph:
     frame_ids |= {c["frame_id"] for c in cells.values() if c["frame_id"]}
     frames_raw = fetch_frames(conn, frame_ids)
     return derive.derive_graph(project_id, versions, deps, cells, frames_raw)
+
+
+def _expand_up(conn: sqlite3.Connection, project_id: str):
+    """An upstream expander for ``core.walk.closure``, SCOPED to the project: a frontier of version
+    ids -> the version ids they directly depend on whose version is in THIS project. Scoping the
+    walk (not only the fetch) stops a cross-project dependency edge from bridging the walk back into
+    an unrelated in-project version reachable only through a foreign one."""
+
+    def expand(frontier) -> set:
+        rows = _chunked_in(
+            conn,
+            "SELECT DISTINCT d.depends_on_version_id AS v FROM artifact_dependencies d "
+            "JOIN artifact_versions dv ON dv.id = d.depends_on_version_id "
+            "JOIN artifacts da ON da.id = dv.artifact_id "
+            "WHERE da.project_id = ? AND d.depends_on_version_id IS NOT NULL "
+            "AND d.artifact_version_id IN ({q})",
+            tuple(frontier),
+            (project_id,),
+        )
+        return {r["v"] for r in rows}
+
+    return expand
+
+
+def _scoped_seeds(conn: sqlite3.Connection, project_id: str, seeds) -> set:
+    """The subset of ``seeds`` (version ids) that belong to ``project_id`` — so a foreign or unknown
+    seed can't START a walk that pulls this project's versions in through it. With the edge-scoped
+    walk, validating the seeds keeps the whole closure provably in-project (unknown -> empty)."""
+    rows = _chunked_in(
+        conn,
+        "SELECT av.id FROM artifact_versions av JOIN artifacts a ON a.id = av.artifact_id "
+        "WHERE a.project_id = ? AND av.id IN ({q})",
+        tuple(seeds),
+        (project_id,),
+    )
+    return {r["id"] for r in rows}
+
+
+def read_graph(conn: sqlite3.Connection, project_id: str, *, seeds=None) -> Graph:
+    """Derive a Graph for ``project_id``. ``seeds=None`` reads the WHOLE project (identical to the
+    old ``read_project_graph``). Given ``seeds`` (an iterable of version ids), reads their FULL
+    UPSTREAM cone: every version the seeds transitively depend on, walked to a fixpoint.
+
+    The cone is verdict-complete for its own nodes — each node's full upstream is in the set — and
+    staleness stays certain even for an artifact whose newer head lives off-cone (``core.derive``
+    trusts the resolvable head pointer). There is deliberately no depth bound: a truncated cone
+    drops boundary nodes' inputs, which reads as a false CLEAN — bounded/downstream walks land with
+    explicit boundary marking so no node is ever asserted CLEAN on incomplete lineage.
+    """
+    if seeds is None:
+        versions = fetch_versions(conn, project_id)
+    else:
+        ids = walk.closure(_scoped_seeds(conn, project_id, seeds), _expand_up(conn, project_id))
+        versions = fetch_versions_by_ids(conn, project_id, ids)
+    return _derive_from_versions(conn, project_id, versions)
+
+
+def read_project_graph(conn: sqlite3.Connection, project_id: str) -> Graph:
+    """The whole project's Graph — the no-seed case of ``read_graph``."""
+    return read_graph(conn, project_id)
 
 
 class CsDbReader:
@@ -129,5 +208,13 @@ class CsDbReader:
         conn = open_cs_db(self.db_path)
         try:
             return read_project_graph(conn, project_id)
+        finally:
+            conn.close()
+
+    def read_graph(self, project_id: str, *, seeds=None) -> Graph:
+        """The whole project (``seeds=None``) or the upstream cone of ``seeds`` (version ids)."""
+        conn = open_cs_db(self.db_path)
+        try:
+            return read_graph(conn, project_id, seeds=seeds)
         finally:
             conn.close()
