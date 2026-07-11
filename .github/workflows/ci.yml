@@ -1,8 +1,9 @@
 name: CI
 
-# Lean gate: uv sync (locked) -> ruff -> pytest, plus the Node browser-boundary tests.
-# Correctness lives in unit/integration tests; demos are a discipline, not a CI gate.
-# Kept deliberately small.
+# Lean gate: uv sync (locked) -> ruff -> pytest (gate + eval package) -> Node boundary tests.
+# The two Python suites have separate rootdirs (each pyproject sets testpaths=["tests"]), so the
+# eval package is run from its own directory. Correctness lives in unit/integration tests; demos
+# are a discipline, not a CI gate. Kept deliberately small.
 
 on:
   push:
@@ -44,7 +45,12 @@ jobs:
       - name: Ruff lint
         run: uv run ruff check .
 
-      - name: Tests
+      - name: Gate tests (Python)
+        run: uv run pytest
+
+      - name: Eval-package tests (Python)
+        # Its own rootdir/testpaths — not collected by the root run above.
+        working-directory: evals/claude-science-rollouts
         run: uv run pytest
 
       - name: Install browser-boundary dependencies
