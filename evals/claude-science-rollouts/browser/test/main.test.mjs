@@ -67,8 +67,12 @@ test("unexpected handler failures do not expose internal messages", async () => 
 });
 
 test("CLI emits one JSON response and no stderr for correlated errors", () => {
+  const unimplemented = {
+    ...request(),
+    operation: "project.inspect",
+  };
   const result = spawnSync(process.execPath, [MAIN_PATH], {
-    input: JSON.stringify(request()),
+    input: JSON.stringify(unimplemented),
     encoding: "utf8",
   });
   assert.equal(result.status, 0);

@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter_ns
 
 from claude_science_rollouts.browser.errors import (
     BrowserProcessError,
@@ -19,6 +20,12 @@ from claude_science_rollouts.browser.protocol import (
 )
 
 MAX_STDERR_BYTES = 16_384
+
+
+@dataclass(frozen=True)
+class BoundaryInvocation:
+    response: BrowserResponse
+    wall_elapsed_ms: int
 
 
 @dataclass(frozen=True)
@@ -37,6 +44,11 @@ class BrowserBridge:
 
     def invoke(self, request: BrowserRequest) -> BrowserResponse:
         """Run once and return a correlated response, including non-completed outcomes."""
+        return self.invoke_timed(request).response
+
+    def invoke_timed(self, request: BrowserRequest) -> BoundaryInvocation:
+        """Run once and retain wall time separately from boundary handler time."""
+        started_at = perf_counter_ns()
         timeout_seconds = (request.deadline_ms + self.timeout_headroom_ms) / 1000
         try:
             process = subprocess.run(
@@ -62,7 +74,9 @@ class BrowserBridge:
             raise BrowserProtocolError("Successful boundary process wrote to stderr")
         if len(process.stdout.encode()) > MAX_RESPONSE_BYTES:
             raise BrowserProtocolError("Response exceeds the protocol byte limit")
-        return parse_response(process.stdout, request)
+        response = parse_response(process.stdout, request)
+        wall_elapsed_ms = max(0, (perf_counter_ns() - started_at) // 1_000_000)
+        return BoundaryInvocation(response=response, wall_elapsed_ms=wall_elapsed_ms)
 
 
 def _bounded_text(value: str) -> str:

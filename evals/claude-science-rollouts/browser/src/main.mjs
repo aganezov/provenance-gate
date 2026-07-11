@@ -2,6 +2,7 @@
 
 import { fileURLToPath } from "node:url";
 
+import { createDefaultHandlers } from "./handlers.mjs";
 import {
   BoundaryError,
   MAX_REQUEST_BYTES,
@@ -57,9 +58,9 @@ export async function readBoundedStdin(input = process.stdin) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-export async function runMain({ handlers = {}, stdin = process.stdin } = {}) {
+export async function runMain({ handlers, stdin = process.stdin } = {}) {
   const text = await readBoundedStdin(stdin);
-  return executeInput(text, handlers);
+  return executeInput(text, handlers ?? createDefaultHandlers());
 }
 
 function elapsed(startedAt) {

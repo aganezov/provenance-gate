@@ -9,8 +9,10 @@ import pytest
 
 from claude_science_rollouts.browser import (
     BrowserBridge,
+    BrowserClient,
     BrowserProcessError,
     BrowserProtocolError,
+    BrowserRequest,
     BrowserTimeoutError,
     make_request,
     parse_response,
@@ -29,7 +31,7 @@ BROWSER_DIR = ROOT / "browser"
 MOCK_BOUNDARY = BROWSER_DIR / "test" / "fixtures" / "mock_boundary.mjs"
 
 
-def request():
+def request() -> BrowserRequest:
     return make_request(
         "session.inspect",
         request_id="request-001",
@@ -95,6 +97,23 @@ def test_unknown_outcome_cannot_be_retryable() -> None:
         parse_response(json.dumps(response), request())
 
 
+def test_session_inspection_result_is_exact_and_typed() -> None:
+    response = {
+        "protocol_version": 1,
+        "request_id": "request-001",
+        "operation": "session.inspect",
+        "outcome": "completed",
+        "elapsed_ms": 1,
+        "result": {
+            "authenticated": "yes",
+            "origin": "http://127.0.0.1:8875",
+            "profile_ready": True,
+        },
+    }
+    with pytest.raises(BrowserProtocolError, match="authenticated"):
+        parse_response(json.dumps(response), request())
+
+
 def test_real_python_to_node_mock_round_trip() -> None:
     node = shutil.which("node")
     if node is None:
@@ -106,6 +125,35 @@ def test_real_python_to_node_mock_round_trip() -> None:
         "origin": "http://127.0.0.1:8875",
         "profile_ready": True,
     }
+
+
+def test_typed_client_records_boundary_and_wall_time(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is not installed")
+    client = BrowserClient(
+        bridge=BrowserBridge((node, str(MOCK_BOUNDARY)), cwd=tmp_path),
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+    )
+    outcome = client.inspect_session(request_id="request-001")
+    assert outcome.outcome == "completed"
+    assert outcome.inspection is not None
+    assert outcome.inspection.authenticated
+    assert outcome.inspection.profile_ready
+    assert outcome.boundary_elapsed_ms >= 0
+    assert outcome.wall_elapsed_ms >= 0
+    assert outcome.transport_overhead_ms >= 0
+
+
+def test_typed_client_requires_explicit_absolute_working_directory() -> None:
+    bridge = BrowserBridge((sys.executable, "unused.py"))
+    with pytest.raises(ValueError, match="absolute working directory"):
+        BrowserClient(
+            bridge=bridge,
+            session_id="session-001",
+            origin="http://127.0.0.1:8875",
+        )
 
 
 def test_nonzero_process_is_not_replayed(tmp_path: Path) -> None:

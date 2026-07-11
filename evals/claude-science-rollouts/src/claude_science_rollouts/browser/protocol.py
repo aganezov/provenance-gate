@@ -157,7 +157,9 @@ def parse_response(text: str, request: BrowserRequest) -> BrowserResponse:
     if outcome == "completed":
         if "result" not in response or "error" in response:
             raise BrowserProtocolError("Completed response must contain only result")
-        result = MappingProxyType(dict(_mapping(response["result"], "response.result")))
+        result_value = dict(_mapping(response["result"], "response.result"))
+        _validate_operation_result(request.operation, result_value)
+        result = MappingProxyType(result_value)
         return BrowserResponse(
             request_id=request.request_id,
             operation=request.operation,
@@ -176,6 +178,22 @@ def parse_response(text: str, request: BrowserRequest) -> BrowserResponse:
         elapsed_ms=elapsed_ms,
         error=error,
     )
+
+
+def _validate_operation_result(operation: str, result: Mapping[str, Any]) -> None:
+    if operation != "session.inspect":
+        return
+    _exact_keys(
+        result,
+        {"authenticated", "origin", "profile_ready"},
+        set(),
+        "response.result",
+    )
+    if not isinstance(result["authenticated"], bool):
+        raise BrowserProtocolError("response.result.authenticated must be boolean")
+    _bare_http_origin(result["origin"])
+    if not isinstance(result["profile_ready"], bool):
+        raise BrowserProtocolError("response.result.profile_ready must be boolean")
 
 
 def _parse_error(value: object, outcome: str) -> BrowserError:

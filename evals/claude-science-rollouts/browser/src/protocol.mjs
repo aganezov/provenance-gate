@@ -106,14 +106,28 @@ export function validateRequest(value) {
 }
 
 export function completedResponse(request, result, elapsedMs) {
+  const validatedResult = object(result, "result");
+  validateOperationResult(request.operation, validatedResult);
   return validateResponse({
     protocol_version: PROTOCOL_VERSION,
     request_id: request.request_id,
     operation: request.operation,
     outcome: "completed",
     elapsed_ms: elapsedMs,
-    result: object(result, "result"),
+    result: validatedResult,
   });
+}
+
+function validateOperationResult(operation, result) {
+  if (operation !== "session.inspect") return;
+  exactKeys(
+    result,
+    ["authenticated", "origin", "profile_ready"],
+    "response.result",
+  );
+  boolean(result.authenticated, "response.result.authenticated");
+  origin(result.origin, "response.result.origin");
+  boolean(result.profile_ready, "response.result.profile_ready");
 }
 
 export function errorResponse(request, error, elapsedMs) {
@@ -302,6 +316,13 @@ function boundedText(value, maximumBytes, path) {
 function boundedInteger(value, minimum, maximum, path) {
   if (!Number.isInteger(value) || value < minimum || value > maximum) {
     throw new BoundaryError("INVALID_INTEGER", `${path} is out of bounds`);
+  }
+  return value;
+}
+
+function boolean(value, path) {
+  if (typeof value !== "boolean") {
+    throw new BoundaryError("INVALID_BOOLEAN", `${path} must be boolean`);
   }
   return value;
 }

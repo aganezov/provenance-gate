@@ -45,6 +45,30 @@ test("valid request and completed response round-trip", () => {
   assert.deepEqual(JSON.parse(serializeResponse(response)), response);
 });
 
+test("session inspection result fields are exact and typed", () => {
+  const parsed = parseRequestText(JSON.stringify(request()));
+  assert.throws(
+    () => completedResponse(
+      parsed,
+      { authenticated: true, origin: parsed.session.origin },
+      12,
+    ),
+    (error) => error instanceof BoundaryError && error.code === "INVALID_FIELDS",
+  );
+  assert.throws(
+    () => completedResponse(
+      parsed,
+      {
+        authenticated: "yes",
+        origin: parsed.session.origin,
+        profile_ready: true,
+      },
+      12,
+    ),
+    (error) => error instanceof BoundaryError && error.code === "INVALID_BOOLEAN",
+  );
+});
+
 test("credential-like fields are forbidden recursively", () => {
   assert.throws(
     () => parseRequestText(JSON.stringify(request({ payload: { password: "x" } }))),
