@@ -343,6 +343,13 @@ html[data-theme="dark"] .frame{ background:color-mix(in oklab, var(--ink) 4%, tr
 #btn-isolate:disabled{ opacity:.38; cursor:default; }
 #btn-isolate:disabled:hover{ background:transparent; color:var(--ink-3); }
 
+/* CS viewer injects its own chrome — Annotate (top-right) + Fit-width & zoom (bottom-right). When
+   rendered inside CS (SNAPSHOT sets .in-cs on <html>), keep our controls out of those two corners so
+   nothing is hidden — matters most in the narrow side-panel view. Standalone (live server) is untouched. */
+.in-cs .hud{ left:14px; right:auto; }             /* bottom-left, clear of CS Fit-width + zoom */
+.in-cs .hdr{ padding-right:104px; }               /* reserve the top-right for CS's Annotate pill (external chrome we can't measure); 104px empirically clears it in the side view — re-tune if CS resizes that pill */
+@media (max-width:720px){ .in-cs .readonly{ display:none; } }  /* narrow side-view: drop the rightmost label */
+
 /* empty state */
 .empty{ position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.5rem;
   color:var(--ink-2); text-align:center; padding:2rem; }
@@ -5947,6 +5954,7 @@ function updateHeader(){
 // so we present an honest "Snapshot · <bake date>" instead of a pulsing "Live … ago" + a dead 2s poll.
 const SNAPSHOT = !!window.__PG_SNAPSHOT;
 if (SNAPSHOT){
+  document.documentElement.classList.add('in-cs');   // CS viewer chrome is present — reflow our corners
   const lbl = document.querySelector('.live .lbl'); if (lbl) lbl.textContent = 'Snapshot';
   const box = document.querySelector('.live'); if (box) box.title = 'Static provenance snapshot — not a live poll';
 }
