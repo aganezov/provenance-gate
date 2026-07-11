@@ -342,6 +342,10 @@ html[data-theme="dark"] .frame{ background:color-mix(in oklab, var(--ink) 4%, tr
 #btn-isolate.on{ color:var(--accent-ink); background:var(--accent-soft); }
 #btn-isolate:disabled{ opacity:.38; cursor:default; }
 #btn-isolate:disabled:hover{ background:transparent; color:var(--ink-3); }
+#btn-review.on{ color:var(--accent-ink); background:var(--accent-soft); }
+#btn-review-copy:disabled,#btn-review-clear:disabled{ opacity:.38; cursor:default; }
+#btn-review-copy:disabled:hover,#btn-review-clear:disabled:hover{ background:transparent; color:var(--ink-2); }
+.node.picked{ outline:2px dashed var(--accent); outline-offset:1px; }
 
 /* CS viewer injects its own chrome — Annotate (top-right) + Fit-width & zoom (bottom-right). When
    rendered inside CS (SNAPSHOT sets .in-cs on <html>), keep our controls out of those two corners so
@@ -4801,6 +4805,12 @@ module.exports = __WEBPACK_EXTERNAL_MODULE__4__;
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/></svg>
         <span id="isolate-lbl">Isolate</span>
       </button>
+      <button id="btn-review" title="Review set: toggle on, click nodes to add them, then copy a review_subgraph prompt">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        <span id="review-lbl">Review</span>
+      </button>
+      <button id="btn-review-copy" title="Copy a review_subgraph prompt for the picked nodes" disabled>Review →</button>
+      <button id="btn-review-clear" title="Clear the review set" disabled>Clear</button>
       <div class="divider"></div>
       <button id="zoom-out" title="Zoom out">–</button>
       <span class="zoom" id="zoom-pct">100%</span>
@@ -4817,6 +4827,9 @@ module.exports = __WEBPACK_EXTERNAL_MODULE__4__;
           <span class="kbadge" id="insp-kind">NODE</span>
           <button class="insp-fit" id="insp-fit" title="Fit selection to view" aria-label="Fit selection to view">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+          </button>
+          <button class="insp-fit" id="insp-add-review" title="Add this node to the review set" aria-label="Add to review set">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
           </button>
           <button class="collapse" id="insp-collapse" title="Collapse inspector" aria-label="Collapse inspector">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
@@ -4963,6 +4976,8 @@ const state = {
   trace: null,                 // active conflict-path trace: { node, key: artifact_id | 'ALL' } | null
   isolated: false,             // isolate mode: only the highlighted subset is shown (rest hidden)
   avMap: {},                   // artifact_version_id -> { file, ver, latest, lv } (for edge popovers)
+  reviewMode: false,           // ON: a node click ADDS to the review set (compose a subgraph for an agent)
+  reviewSet: new Set(),        // picked node ids; export -> a review_subgraph([...]) prompt. Clear-only reset.
 };
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -5040,11 +5055,13 @@ function initCy(){
       else { lastId = id; lastAt = now; }
       return;
     }
+    if (state.reviewMode){ addReviewMember(id); return; }   // review mode: a click ADDS to the review set
     selectNode(id);
     if (dbl){ zoomToNode(t); lastId = null; lastAt = 0; }
     else { lastId = id; lastAt = now; }
   });
   cy.on('tap', (e) => { if (e.target === cy) deselect(); });
+  cy.on('cxttap', 'node', (e) => { if (!e.target.isParent()) addLineageToReview(e.target.id()); });   // right-click -> add upstream lineage
 
   // manual pan / zoom un-sticks auto-fit (programmatic fit does not touch this)
   el.cyBox.addEventListener('wheel', () => setAutofit(false), { passive: true });
@@ -5229,6 +5246,7 @@ function attachLayoutStop(layout){
     else if (state.selectedFrame && cy.$id(state.selectedFrame).nonempty()){ selectFrame(state.selectedFrame, true); }
     else if (state.selectedFrame){ state.selectedFrame = null; }
     syncIsolateBtn();
+    syncPicked();               // re-apply the review-set outline to the freshly-rebuilt cards + prune gone ids
   });
   return layout;
 }
@@ -5889,6 +5907,101 @@ $('#btn-orient').addEventListener('click', () => {
   PG.action('orient', { dir: state.orient });
 });
 $('#btn-isolate').addEventListener('click', () => setIsolate(!state.isolated));
+
+/* ---------------- review set: compose an arbitrary node set to hand an agent ---------------- */
+// Picked nodes -> a review_subgraph([output version ids]) prompt the agent runs in CS to get the
+// deterministic kit. The cockpit only composes the set + emits the prompt; the kit is built in-kernel.
+function syncReviewBtn(){
+  const n = state.reviewSet.size;
+  const b = $('#btn-review'); if (b) b.classList.toggle('on', state.reviewMode);
+  const lbl = $('#review-lbl'); if (lbl) lbl.textContent = n ? 'Review (' + n + ')' : 'Review';
+  const cp = $('#btn-review-copy'), clr = $('#btn-review-clear');
+  if (cp) cp.disabled = n === 0;
+  if (clr) clr.disabled = n === 0;
+}
+function addReviewMember(id){
+  if (id && state.cards[id] && !state.reviewSet.has(id)){   // must be a real, rendered graph node (not a frame / unknown id)
+    state.reviewSet.add(id);
+    state.cards[id].classList.add('picked');
+    PG.action('review_add', { node: id, size: state.reviewSet.size });
+  }
+  syncReviewBtn();
+}
+function clearReview(){
+  state.reviewSet.forEach((id) => { const c = state.cards[id]; if (c) c.classList.remove('picked'); });
+  state.reviewSet.clear();
+  PG.action('review_clear', null);
+  syncReviewBtn();
+}
+function syncPicked(){   // renderGraph rebuilds state.cards each draw (live poll only) — re-apply the
+  const live = state.graph ? new Set(state.graph.nodes.map((n) => n.id)) : new Set();  // outline + drop
+  state.reviewSet.forEach((id) => {                                                     // ids that are gone
+    if (!live.has(id)) state.reviewSet.delete(id);                 // prune: never leave a phantom in the count
+    else { const c = state.cards[id]; if (c) c.classList.add('picked'); }   // restore the outline on the new card
+  });
+  syncReviewBtn();
+}
+function addLineageToReview(id){                 // right-click a node -> add it + its UPSTREAM cone
+  const n = cy && cy.$id(id);
+  if (!n || n.empty()) return;
+  n.union(n.predecessors('node')).forEach((node) => addReviewMember(node.id()));
+  PG.action('review_add_lineage', { node: id, size: state.reviewSet.size });
+}
+function reviewSeeds(){
+  const seeds = [];
+  state.reviewSet.forEach((id) => {
+    const n = state.graph && state.graph.nodes.find((x) => x.id === id);
+    if (n) (n.output_surface || []).forEach((a) => seeds.push(a.artifact_version_id));
+  });
+  return seeds;
+}
+function copyText(text){                        // synchronous execCommand copy — reliable *within* the
+  const ta = document.createElement('textarea');   // click gesture, even in the CS viewer iframe where the
+  ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';   // async navigator.clipboard can reject
+  document.body.appendChild(ta); ta.focus(); ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  document.body.removeChild(ta);
+  return ok;                                    // honest: caller reports success only if this is true
+}
+function flash(btn, msg){                        // transient label; restores the ORIGINAL (captured once,
+  if (!btn) return;                              // so a rapid second click can't freeze it on the flash text)
+  if (btn._flashT) clearTimeout(btn._flashT);
+  if (btn._label == null) btn._label = btn.textContent;
+  btn.textContent = msg;
+  btn._flashT = setTimeout(() => { btn.textContent = btn._label; btn._flashT = null; }, 1400);
+}
+function copyReviewPrompt(){
+  const cp = $('#btn-review-copy');
+  const seeds = reviewSeeds();
+  if (!seeds.length){ flash(cp, 'nothing to copy'); return; }   // enabled-but-empty: say so, never a silent no-op
+  const names = [];
+  state.reviewSet.forEach((id) => {
+    const n = state.graph && state.graph.nodes.find((x) => x.id === id);
+    if (n) names.push(String(n.label).replace(/[\r\n]+/g, ' '));   // strip newlines — this text is fed to an agent
+  });
+  const p =
+    "Use the provenance-gate DRAFT skill (draft skills don't auto-load). In the control-plane/repl kernel:\n"
+    + "  src = host.skills.read('provenance-gate','kernel.py')['content']; exec(src, globals())\n"
+    + "Then call:\n"
+    + '  review_subgraph(' + JSON.stringify(seeds) + ', scope="upstream")\n'
+    + 'and assess whether these results rest on coherent, current inputs; flag any silent version conflict or stale dependency.\n'
+    + '# selected: ' + names.join(', ');
+  const ok = copyText(p);
+  PG.action('review_copy', { seeds: seeds.length, ok: ok });
+  flash(cp, ok ? 'Copied ✓' : 'Copy failed — try again');
+}
+// Bind defensively: these controls live in the freshly-baked template, but this app.js is a
+// SAVED-ONCE artifact. If a stale saved app.js ever meets a differently-versioned template, a
+// missing button must degrade to an inert control — never crash the cockpit on a null addEventListener.
+const bindReview = (sel, fn) => { const e = $(sel); if (e) e.addEventListener('click', fn); };
+bindReview('#btn-review', () => { state.reviewMode = !state.reviewMode; PG.action('review_mode', { on: state.reviewMode }); syncReviewBtn(); });
+bindReview('#btn-review-copy', () => copyReviewPrompt());
+bindReview('#btn-review-clear', () => clearReview());
+bindReview('#insp-add-review', () => addReviewMember(state.selected));   // regular mode: fold the selected node in
+// right-click on the graph is ours (add-lineage), not the browser menu — el.viewport covers both the
+// cy canvas and the HTML node overlay, so it fires wherever the node hit lands.
+if (el.viewport) el.viewport.addEventListener('contextmenu', (e) => e.preventDefault());
 $('#zoom-in').addEventListener('click', () => { setAutofit(false); cy.zoom({ level: Math.min(2.5, cy.zoom() * 1.2), renderedPosition: { x: el.cyBox.clientWidth / 2, y: el.cyBox.clientHeight / 2 } }); el.zoomPct.textContent = Math.round(cy.zoom() * 100) + '%'; });
 $('#zoom-out').addEventListener('click', () => { setAutofit(false); cy.zoom({ level: Math.max(0.05, cy.zoom() / 1.2), renderedPosition: { x: el.cyBox.clientWidth / 2, y: el.cyBox.clientHeight / 2 } }); el.zoomPct.textContent = Math.round(cy.zoom() * 100) + '%'; });
 cy_zoom_track();
@@ -5998,6 +6111,7 @@ async function switchProject(pid){
   state.current = pid;
   PG.action('select_project', { project: pid });
   deselect();
+  clearReview();               // the review set is per-project (Copilot is per CS project) — a switch resets it
   try {
     // Explicit user switch: force a FULL fetch. getGraph is the conditional poll (?v=built_at ->
     // {unchanged} -> null), which is correct for the 2s refresh of the *current* project but wrong

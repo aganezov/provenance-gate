@@ -1,0 +1,93 @@
+"""Review kit — a deterministic evidence brief over a lineage subgraph.
+
+Given a Graph (a cone, read via ``read_graph(seeds)``), assemble a structured, agent-readable
+package: what's under review, the deterministic flagged conflicts (reusing ``core.audit``), the
+lineage as consumption edges, the artifact inventory, the raw-input boundary, and the cell ids to
+fetch code for. The gate fixes WHAT the agent looks at — same graph in, same kit out — and the agent
+does the reasoning, free to walk deeper with its own tools. The kit is a deterministic entry point,
+not a leash.
+
+Deliberately absent: the producing code (the agent fetches it — better tools for it) and any
+attestation/seal (deferred). Pure over the Graph model: an adapter/skill resolves seeds, reads the
+graph, then calls ``review_kit``. ``scope`` is a passthrough label for how the graph was pulled.
+"""
+
+from __future__ import annotations
+
+from .audit import _ref_map, audit_graph, flagged_verdicts
+from .model import Graph
+
+REVIEW_QUESTION = (
+    "Assess whether this result rests on coherent, current inputs; "
+    "flag any silent version conflict or stale dependency."
+)
+GO_DEEPER = (
+    "Fetch the producing code for these cells with your own tools; "
+    "walk further upstream if you need more than this frame."
+)
+
+
+def _short(checksum: str) -> str:
+    return checksum[:8] if checksum else ""
+
+
+def _name(ref) -> str:
+    return ref.filename or ""   # CS keeps NULL-filename versions; a None here must not break sorts
+
+
+def review_kit(graph: Graph, scope: str = "upstream") -> dict:
+    """A deterministic review brief over ``graph`` (a lineage subgraph). Returns a JSON-safe dict;
+    identical ``(graph, scope)`` produces an identical kit. Reuses ``core.audit`` for the flags."""
+    label = {n.id: n.label for n in graph.nodes}
+    ref_of = _ref_map(graph)   # version_id -> ArtifactRef (the one map, shared with core.audit)
+
+    # focus = the terminal RESULTS: artifact versions produced in the graph but consumed by nothing
+    # in it. Per-VERSION, not per-node — a node with one consumed + one unconsumed output still
+    # surfaces the unconsumed terminal.
+    consumed = {e.via_artifact_version_id for e in graph.edges}
+    focus = sorted({_name(a) for a in ref_of.values()
+                    if a.artifact_version_id not in consumed})
+
+    flags = flagged_verdicts(audit_graph(graph), label)   # shared serializer with audit_project
+
+    lineage = []
+    for e in graph.edges:
+        a = ref_of.get(e.via_artifact_version_id)
+        lineage.append({
+            "from": label.get(e.src_node_id, e.src_node_id),
+            "to": label.get(e.dst_node_id, e.dst_node_id),
+            "artifact": _name(a) if a else e.via_artifact_version_id,
+            "version": a.version_number if a else None,
+            "checksum": _short(a.checksum) if a else "",
+            "ref": e.reference_name,
+        })
+    lineage.sort(key=lambda r: (r["to"], r["from"], r["artifact"], r["version"] or 0))
+
+    artifacts = sorted(
+        ({"filename": _name(a), "version": a.version_number,
+          "checksum": _short(a.checksum), "is_latest": a.is_latest}
+         for a in ref_of.values()),
+        key=lambda r: (r["filename"], r["version"] or 0),
+    )
+
+    # boundary = the raw inputs the lineage rests on (source nodes = no producer in the set)
+    boundary = sorted(
+        ({"artifact": _name(a), "version": a.version_number, "checksum": _short(a.checksum)}
+         for n in graph.nodes if n.kind == "source" for a in n.output_surface),
+        key=lambda r: (r["artifact"], r["version"] or 0),
+    )
+
+    cells = sorted(n.cs_cell_id or n.id for n in graph.nodes if n.kind == "computation")
+
+    return {
+        "scope": scope,
+        "focus": focus,
+        "nodes": len(graph.nodes),
+        "question": REVIEW_QUESTION,
+        "flags": flags,
+        "lineage": lineage,
+        "artifacts": artifacts,
+        "boundary": boundary,
+        "cells": cells,
+        "next": GO_DEEPER,
+    }
