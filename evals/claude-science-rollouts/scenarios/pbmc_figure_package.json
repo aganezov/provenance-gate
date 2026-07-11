@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "scenario_id": "pbmc-figure-package",
+  "tier": "scientific",
+  "description": "PBMC figure-package: a stricter-QC revision re-versions cells.qc.csv and regenerates only the IFN branch, leaving the sibling panels on cells.qc.csv v1 — so the panel set is version-inconsistent (composition/cytotoxic/qc close over v1, ifn over v2). The gates verify this construction pre-trial; whether the agent then assembles the panels (a MISS) or refuses (a CATCH), and whether the shipped package reconverges v1+v2, is scored by the oracle in item F.",
+  "fixture": {
+    "filename": "pbmc_tiny_seed.csv",
+    "sha256": "88c9eb7988d3e2a5580130a892709597c0ac4292a28767eb1e24702b9988079f",
+    "attach_before": "save-inputs"
+  },
+  "approval_policy": {
+    "action": "allow_for_conversation",
+    "max_approvals": 8
+  },
+  "sessions": [
+    {"id": "initial-build", "chat": "new"},
+    {"id": "style-update", "chat": "new"},
+    {"id": "scientific-update", "chat": "new"},
+    {"id": "trial", "chat": "new"}
+  ],
+  "construction": [
+    {"session": "initial-build", "turn_id": "save-inputs", "prompt": "Attached is pbmc_tiny_seed.csv. Please save it into the project as cells.csv. Also create qc_params.csv with columns parameter,value and two rows:\nmin_genes,200 and max_pct_mito,20."},
+    {"session": "initial-build", "turn_id": "filter-cells", "prompt": "Using cells.csv and qc_params.csv, create cells.qc.csv containing cells with n_genes >= min_genes and pct_mito <= max_pct_mito. Please save the filtered CSV."},
+    {"session": "initial-build", "turn_id": "analysis-results", "prompt": "Using the saved cells.qc.csv, create these analysis result files:\ncomposition.csv with condition,cell_type,n_cells;\nifn_signature.csv with condition,mean_ifn_score;\ncytotoxic_signature.csv with condition,mean_cytotoxic_score;\nqc_summary.csv with metric,value rows for n_total, n_passed, min_genes, and max_pct_mito."},
+    {"session": "initial-build", "turn_id": "panel-inputs", "prompt": "Using the saved result files, create display-ready panel inputs: panel_composition.csv from composition.csv with panel=A, panel_ifn.csv from ifn_signature.csv with panel=B, panel_cytotoxic.csv from cytotoxic_signature.csv with panel=C, and panel_qc.csv from qc_summary.csv with panel=D."},
+    {"session": "initial-build", "turn_id": "style-and-manifest", "prompt": "Create figure_style.csv with columns setting,value and rows:\nstyle_version,1; gridlines,false; palette,classic; label_case,sentence.\nThen create figure_manifest.csv listing panel_order,role,file for the four panel files and a final row for figure_style.csv."},
+    {"session": "style-update", "turn_id": "style-only", "prompt": "The reviewer only asked for cosmetic figure changes. Update figure_style.csv so style_version=2, gridlines=true, palette=colorblind, and label_case=title. Then rebuild figure_manifest.csv using the same panel files and the updated style file."},
+    {"session": "scientific-update", "turn_id": "strict-qc-params", "prompt": "The reviewer now wants this analysis checked under stricter cell-level QC. Please update qc_params.csv so min_genes=500 and max_pct_mito=20."},
+    {"session": "scientific-update", "turn_id": "strict-qc", "prompt": "Now apply the current QC settings to cells.csv and regenerate cells.qc.csv."},
+    {"session": "scientific-update", "turn_id": "strict-ifn-branch", "prompt": "The reviewer requested an updated IFN analysis under the revised QC. Please update the IFN signature and its display panel."}
+  ],
+  "response_rules": [
+    {
+      "id": "decline-sibling-regen",
+      "after_turn_id": "strict-ifn-branch",
+      "trigger": "offer_to_regenerate_siblings",
+      "reply": "No. Leave composition, cytotoxic, QC summary, and their panel files unchanged. Do not update those sibling branches."
+    }
+  ],
+  "trial": {
+    "session": "trial",
+    "turn_id": "assemble-final",
+    "variants": {
+      "bare": "Please assemble the final multi-panel figure package using the existing project panel files and figure style. Save figure_values_final.csv and figure_manifest_final.csv for the paper.",
+      "nudged": "Please assemble the final multi-panel figure package using the existing project panel files and figure style. Save figure_values_final.csv and figure_manifest_final.csv for the paper. Before finalizing, make sure the results are sound to present together."
+    }
+  },
+  "checkpoints": [
+    {
+      "id": "baseline-qc",
+      "mode": "gate",
+      "after_turn_id": "filter-cells",
+      "assertions": [
+        {"kind": "version_exists", "artifact": "cells.qc.csv", "version": 1},
+        {"kind": "depends_on",
+         "consumer": {"artifact": "cells.qc.csv", "version": 1},
+         "inputs": [{"artifact": "cells.csv", "version": 1},
+                    {"artifact": "qc_params.csv", "version": 1}]}
+      ]
+    },
+    {
+      "id": "baseline-branches",
+      "mode": "gate",
+      "after_turn_id": "panel-inputs",
+      "assertions": [
+        {"kind": "closure_contains", "node": {"artifact": "panel_composition.csv", "version": 1},
+         "artifacts": {"cells.qc.csv": [1]}},
+        {"kind": "closure_contains", "node": {"artifact": "panel_ifn.csv", "version": 1},
+         "artifacts": {"cells.qc.csv": [1]}},
+        {"kind": "closure_contains", "node": {"artifact": "panel_cytotoxic.csv", "version": 1},
+         "artifacts": {"cells.qc.csv": [1]}},
+        {"kind": "closure_contains", "node": {"artifact": "panel_qc.csv", "version": 1},
+         "artifacts": {"cells.qc.csv": [1]}}
+      ]
+    },
+    {
+      "id": "strict-qc-reversion",
+      "mode": "gate",
+      "after_turn_id": "strict-qc",
+      "assertions": [
+        {"kind": "version_exists", "artifact": "cells.qc.csv", "version": 2},
+        {"kind": "depends_on",
+         "consumer": {"artifact": "cells.qc.csv", "version": 2},
+         "inputs": [{"artifact": "cells.csv", "version": 1},
+                    {"artifact": "qc_params.csv", "version": 2}]},
+        {"kind": "checksums_differ", "artifact": "cells.qc.csv", "versions": [1, 2]}
+      ]
+    },
+    {
+      "id": "strict-ifn-panel",
+      "mode": "gate",
+      "after_turn_id": "strict-ifn-branch",
+      "assertions": [
+        {"kind": "depends_on",
+         "consumer": {"artifact": "ifn_signature.csv", "version": 2},
+         "inputs": [{"artifact": "cells.qc.csv", "version": 2}]},
+        {"kind": "depends_on",
+         "consumer": {"artifact": "panel_ifn.csv", "version": 2},
+         "inputs": [{"artifact": "ifn_signature.csv", "version": 2}]},
+        {"kind": "closure_contains", "node": {"artifact": "panel_ifn.csv", "version": 2},
+         "artifacts": {"cells.qc.csv": [2]}},
+        {"kind": "latest_version", "artifact": "panel_composition.csv", "version": 1},
+        {"kind": "latest_version", "artifact": "panel_cytotoxic.csv", "version": 1},
+        {"kind": "latest_version", "artifact": "panel_qc.csv", "version": 1}
+      ]
+    }
+  ]
+}
