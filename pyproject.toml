@@ -19,6 +19,12 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# uv workspace: this package (the gate) stays dependencies = []. The eval harness lives as a separate
+# member with its OWN pyproject + deps, so heavyweight browser/eval deps never land on the gate — it
+# must keep inlining into the zero-dep Python-3.9 CS skill kernel.
+[tool.uv.workspace]
+members = ["evals/claude-science-rollouts"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/provenance_gate"]
 
