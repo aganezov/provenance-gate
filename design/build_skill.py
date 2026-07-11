@@ -208,10 +208,10 @@ def _current_frame():
     Returns (None, None) when it can't resolve (not a repl CWD, an unknown id, or a legacy schema
     without these columns), so callers fall back to the heuristic project or report no current chat."""
     import os
-    fid = os.path.basename(os.getcwd())
-    if not fid:
-        return None, None
     try:
+        fid = os.path.basename(os.getcwd())   # getcwd inside the guard: a deleted CWD raises OSError
+        if not fid:
+            return None, None
         rows = _HostReader().query(
             "SELECT root_frame_id, project_id FROM frames WHERE id = '" + _esc(fid) + "'")
     except Exception:

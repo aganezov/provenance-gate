@@ -203,6 +203,20 @@ def test_review_chat_degrades_when_frame_lookup_fails(cs_conn, tmp_path, monkeyp
     assert out["status"] == "no_current_chat"   # graceful decline, not a crash
 
 
+def test_review_chat_survives_getcwd_failure(cs_conn, monkeypatch):
+    # _current_frame's docstring promises (None, None) on failure — a raising os.getcwd() (a deleted
+    # or unmounted CWD) must degrade to no_current_chat, not propagate. Guards the getcwd-inside-try
+    # fix: with getcwd outside the guard, this would raise instead.
+    import os
+
+    def _boom():
+        raise OSError("cwd gone")
+
+    monkeypatch.setattr(os, "getcwd", _boom)
+    out = _exec_kernel(_FakeHost(cs_conn))["review_chat"]()
+    assert out["status"] == "no_current_chat"
+
+
 def test_render_cockpit_full_scope_is_uniform_dict(cs_conn, tmp_path, monkeypatch):
     # scope is always a dict; a full render carries focus=None (not the string "full")
     monkeypatch.chdir(tmp_path)
