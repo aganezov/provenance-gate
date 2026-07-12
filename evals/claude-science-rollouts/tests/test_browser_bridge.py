@@ -3,11 +3,15 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
 from claude_science_rollouts.browser import (
+    ApprovalCard,
+    ApprovalResolved,
+    AttachmentAccepted,
     BrowserBridge,
     BrowserClient,
     BrowserProcessError,
@@ -15,6 +19,14 @@ from claude_science_rollouts.browser import (
     BrowserRequest,
     BrowserSession,
     BrowserTimeoutError,
+    ChatObservation,
+    ContextObservation,
+    DeliveryProof,
+    ProjectObservation,
+    SettledProof,
+    TurnContinuation,
+    TurnObservation,
+    TurnResult,
     make_request,
     parse_response,
 )
@@ -149,6 +161,356 @@ def test_session_detach_result_is_exact_and_typed() -> None:
         parse_response(json.dumps(response), detach_request)
 
 
+def test_g3a_requests_are_exact_and_identity_typed() -> None:
+    project_request = make_request(
+        "project.inspect",
+        request_id="project-001",
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+        deadline_ms=15_000,
+        payload={"project_id": "project-001"},
+    )
+    assert project_request.payload == {"project_id": "project-001"}
+    chat_request = make_request(
+        "chat.inspect",
+        request_id="chat-001",
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+        deadline_ms=15_000,
+        payload={
+            "project_id": "project-001",
+            "chat_id": "chat-001",
+            "root_frame_id": "root-001",
+        },
+    )
+    assert chat_request.payload["root_frame_id"] == "root-001"
+    with pytest.raises(BrowserProtocolError, match="missing or unknown"):
+        make_request(
+            "project.inspect",
+            request_id="project-002",
+            session_id="session-001",
+            origin="http://127.0.0.1:8875",
+            deadline_ms=15_000,
+            payload={"project_id": "project-001", "extra": True},
+        )
+
+
+def test_g3a_response_validation_rejects_transcript_contradictions() -> None:
+    chat_request = make_request(
+        "chat.inspect",
+        request_id="chat-001",
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+        deadline_ms=15_000,
+        payload={"project_id": "project-001", "chat_id": "chat-001"},
+    )
+    result = {
+        "project_id": "project-001",
+        "chat_id": "chat-001",
+        "transcript": [
+            {"turn_id": "turn-user", "role": "user", "text": "Question", "truncated": False}
+        ],
+        "user_turn_count": 2,
+        "composer_empty": True,
+        "root_frame_id": "root-001",
+        "response_control_id": None,
+        "current_turn_state": "indeterminate",
+        "approval_cards": [],
+    }
+    response = {
+        "protocol_version": 1,
+        "request_id": "chat-001",
+        "operation": "chat.inspect",
+        "outcome": "completed",
+        "elapsed_ms": 1,
+        "result": result,
+    }
+    with pytest.raises(BrowserProtocolError, match="count contradicts"):
+        parse_response(json.dumps(response), chat_request)
+
+    result["user_turn_count"] = 1
+    result["transcript"][0]["text"] = "x" * 16_385
+    with pytest.raises(BrowserProtocolError, match="bounded string"):
+        parse_response(json.dumps(response), chat_request)
+
+    result["transcript"][0]["text"] = "Question"
+    result["transcript"][0]["role"] = "tool"
+    with pytest.raises(BrowserProtocolError, match="role"):
+        parse_response(json.dumps(response), chat_request)
+
+    result["transcript"][0]["role"] = "user"
+    result["response_control_id"] = "turn-user"
+    with pytest.raises(BrowserProtocolError, match="assistant turn"):
+        parse_response(json.dumps(response), chat_request)
+
+
+def test_context_observation_accepts_empty_enabled_set() -> None:
+    context_request = make_request(
+        "agent_context.inspect",
+        request_id="context-empty",
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+        deadline_ms=15_000,
+        payload={"project_id": "project-001"},
+    )
+    response = {
+        "protocol_version": 1,
+        "request_id": "context-empty",
+        "operation": "agent_context.inspect",
+        "outcome": "completed",
+        "elapsed_ms": 1,
+        "result": {
+            "project_id": "project-001",
+            "enabled_skills": [],
+            "context_hash": "a" * 64,
+        },
+    }
+    parsed = parse_response(json.dumps(response), context_request)
+    assert parsed.result is not None
+    assert parsed.result["enabled_skills"] == []
+
+
+def test_g3b_requests_are_exact_and_root_mode_typed() -> None:
+    prompt = "Do one thing"
+    digest = sha256(prompt.encode()).hexdigest()
+    request = make_request(
+        "turn.submit_wait",
+        request_id="turn-001",
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+        deadline_ms=30_000,
+        payload={
+            "project_id": "project-001",
+            "chat_id": "chat-001",
+            "root_mode": "new",
+            "prompt": prompt,
+            "authored_prompt_sha256": digest,
+        },
+    )
+    assert request.payload["root_mode"] == "new"
+    with pytest.raises(BrowserProtocolError, match="cannot include"):
+        make_request(
+            "turn.submit_wait",
+            request_id="turn-002",
+            session_id="session-001",
+            origin="http://127.0.0.1:8875",
+            deadline_ms=30_000,
+            payload={**request.payload, "root_frame_id": "root-001"},
+        )
+    with pytest.raises(BrowserProtocolError, match="requires"):
+        make_request(
+            "turn.submit_wait",
+            request_id="turn-003",
+            session_id="session-001",
+            origin="http://127.0.0.1:8875",
+            deadline_ms=30_000,
+            payload={**request.payload, "root_mode": "existing"},
+        )
+
+
+def test_g3c_requests_are_exact_and_source_path_is_request_only() -> None:
+    create = make_request(
+        "project.create",
+        request_id="create-001",
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+        deadline_ms=20_000,
+        payload={"name": "PBMC bare replicate"},
+    )
+    assert create.payload == {"name": "PBMC bare replicate"}
+    upload = make_request(
+        "attachment.upload",
+        request_id="upload-001",
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+        deadline_ms=30_000,
+        payload={
+            "project_id": "project-created",
+            "chat_id": "chat-created",
+            "source_path": "/private/tmp/pbmc_tiny_seed.csv",
+        },
+    )
+    response = {
+        "protocol_version": 1,
+        "request_id": "upload-001",
+        "operation": "attachment.upload",
+        "outcome": "completed",
+        "elapsed_ms": 1,
+        "result": {
+            "project_id": "project-created",
+            "chat_id": "chat-created",
+            "filename": "pbmc_tiny_seed.csv",
+            "accepted": True,
+        },
+    }
+    parsed = parse_response(json.dumps(response), upload)
+    assert parsed.result is not None
+    assert "source_path" not in parsed.result
+    assert "/private/tmp" not in json.dumps(dict(parsed.result))
+    with pytest.raises(BrowserProtocolError, match="absolute"):
+        make_request(
+            "attachment.upload",
+            request_id="upload-relative",
+            session_id="session-001",
+            origin="http://127.0.0.1:8875",
+            deadline_ms=30_000,
+            payload={
+                "project_id": "project-created",
+                "chat_id": "chat-created",
+                "source_path": "pbmc_tiny_seed.csv",
+            },
+        )
+
+
+def test_typed_g3b_submit_continuation_wait_and_approval(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is not installed")
+    client = BrowserClient(
+        bridge=BrowserBridge((node, str(MOCK_BOUNDARY)), cwd=tmp_path),
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+    )
+    session = BrowserSession(client)
+    session.attach(request_id="attach-001")
+    prompt = "needs wait"
+    authored_hash = sha256(prompt.encode()).hexdigest()
+    submitted = session.submit_turn_wait(
+        "project-001",
+        "chat-001",
+        "new",
+        prompt,
+        authored_hash,
+        request_id="turn-submit",
+    )
+    assert submitted.outcome == "completed"
+    assert submitted.result == TurnResult(
+        project_id="project-001",
+        chat_id="chat-001",
+        root_frame_id="root-created",
+        turn_state="busy",
+        root_created=True,
+        delivery=DeliveryProof(
+            root_frame_id="root-created",
+            authored_prompt_sha256=authored_hash,
+            delivery_text_sha256=authored_hash,
+            normalized_user_turn_id="turn-user-new",
+        ),
+        settled=None,
+        approval=None,
+        continuation=TurnContinuation(
+            project_id="project-001",
+            chat_id="chat-001",
+            root_frame_id="root-created",
+            authored_prompt_sha256=authored_hash,
+            delivery_text_sha256=authored_hash,
+            normalized_user_turn_id="turn-user-new",
+            baseline_response_control_id="turn-assistant-old",
+        ),
+    )
+    assert submitted.result.continuation is not None
+    waited = session.wait_turn(
+        "project-001",
+        "chat-001",
+        submitted.result.continuation,
+        request_id="turn-wait",
+    )
+    assert waited.result is not None
+    assert waited.result.turn_state == "settled"
+    assert waited.result.delivery == submitted.result.delivery
+    assert waited.result.settled == SettledProof(
+        stop_hidden=True,
+        stable_samples=2,
+        new_response_control_id="turn-assistant-new",
+    )
+    resolved = session.resolve_approval(
+        "project-001",
+        "chat-001",
+        "root-created",
+        "approval:abc:0",
+        "allow_for_conversation",
+        request_id="approval-001",
+        expected_fingerprint="c" * 64,
+    )
+    assert resolved.result == ApprovalResolved(
+        project_id="project-001",
+        chat_id="chat-001",
+        root_frame_id="root-created",
+        card_id="approval:abc:0",
+        decision="allow_for_conversation",
+        verified_cleared=True,
+    )
+    session.detach(request_id="detach-001")
+
+
+def test_typed_g3c_setup_obeys_empty_enabled_skill_preflight(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is not installed")
+    client = BrowserClient(
+        bridge=BrowserBridge((node, str(MOCK_BOUNDARY)), cwd=tmp_path),
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+    )
+    session = BrowserSession(client)
+    session.attach(request_id="attach-001")
+
+    created = session.create_project("PBMC bare replicate", request_id="create-001")
+    assert created.observation == ProjectObservation(
+        project_id="project-created",
+        verified=True,
+        composer_empty=True,
+        user_turn_count=0,
+        root_frame_id=None,
+        root_state=None,
+    )
+    context = session.inspect_context("project-created", request_id="preflight-001")
+    assert context.observation is not None
+    assert context.observation.enabled_skills == frozenset()
+
+    chat = session.new_chat("project-created", request_id="chat-new-001")
+    assert chat.observation is not None
+    assert chat.observation.chat_id == "chat-created"
+    assert chat.observation.root_frame_id is None
+    source_path = str((tmp_path / "pbmc_tiny_seed.csv").resolve())
+    uploaded = session.upload_attachment(
+        "project-created",
+        "chat-created",
+        source_path,
+        request_id="upload-001",
+    )
+    assert uploaded.result == AttachmentAccepted(
+        project_id="project-created",
+        chat_id="chat-created",
+        filename="pbmc_tiny_seed.csv",
+        accepted=True,
+    )
+    assert source_path not in repr(uploaded.result)
+    session.detach(request_id="detach-001")
+
+
+def test_g3b_raw_prompt_hash_mismatch_stops_before_browser_action(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is not installed")
+    client = BrowserClient(
+        bridge=BrowserBridge((node, str(MOCK_BOUNDARY)), cwd=tmp_path),
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+    )
+    outcome = client.submit_turn_wait(
+        "project-001",
+        "chat-001",
+        "new",
+        "Do one thing",
+        "a" * 64,
+        request_id="turn-mismatch",
+    )
+    assert outcome.outcome == "not_started"
+    assert outcome.error is not None
+    assert outcome.error.code == "PROMPT_HASH_MISMATCH"
+
+
 def test_real_python_to_node_mock_round_trip() -> None:
     node = shutil.which("node")
     if node is None:
@@ -212,6 +574,79 @@ def test_python_owns_attach_many_detach_lifecycle(tmp_path: Path) -> None:
         session.inspect(request_id="inspect-after-detach")
     with pytest.raises(RuntimeError, match="not attached"):
         session.detach(request_id="detach-duplicate")
+
+
+def test_typed_g3a_observations_cross_python_node_boundary(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is not installed")
+    client = BrowserClient(
+        bridge=BrowserBridge((node, str(MOCK_BOUNDARY)), cwd=tmp_path),
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+    )
+    session = BrowserSession(client)
+    session.attach(request_id="attach-001")
+
+    project = session.inspect_project("project-001", request_id="project-001")
+    assert project.observation == ProjectObservation(
+        project_id="project-001",
+        verified=True,
+        composer_empty=True,
+        user_turn_count=1,
+        root_frame_id="root-001",
+        root_state="completed",
+    )
+
+    chat = session.inspect_chat(
+        "project-001",
+        "chat-001",
+        request_id="chat-001",
+        root_frame_id="root-001",
+    )
+    assert chat.observation == ChatObservation(
+        project_id="project-001",
+        chat_id="chat-001",
+        transcript=(
+            TurnObservation("turn-user", "user", "Question", False),
+            TurnObservation("turn-assistant", "assistant", "Answer", False),
+        ),
+        user_turn_count=1,
+        composer_empty=True,
+        root_frame_id="root-001",
+        response_control_id="turn-assistant",
+        current_turn_state="indeterminate",
+        approval_cards=(),
+    )
+
+    context = session.inspect_context("project-001", request_id="context-001")
+    assert context.observation == ContextObservation(
+        project_id="project-001",
+        enabled_skills=frozenset(),
+        context_hash="a" * 64,
+    )
+    assert ApprovalCard("card-001", "b" * 64, "Permission", "approval").kind == "approval"
+    session.detach(request_id="detach-001")
+
+
+def test_typed_g3a_blank_chat_is_valid(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is not installed")
+    client = BrowserClient(
+        bridge=BrowserBridge((node, str(MOCK_BOUNDARY)), cwd=tmp_path),
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+    )
+    outcome = client.inspect_chat(
+        "project-001",
+        "draft-001",
+        request_id="chat-blank",
+    )
+    assert outcome.observation is not None
+    assert outcome.observation.root_frame_id is None
+    assert outcome.observation.transcript == ()
+    assert outcome.observation.user_turn_count == 0
 
 
 def test_typed_client_requires_explicit_absolute_working_directory() -> None:

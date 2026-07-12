@@ -2,11 +2,25 @@
 
 from claude_science_rollouts.browser.bridge import BoundaryInvocation, BrowserBridge
 from claude_science_rollouts.browser.client import (
+    ApprovalCard,
+    ApprovalObservation,
+    ApprovalResolved,
+    AttachmentAccepted,
     BrowserClient,
+    BrowserObservationOutcome,
+    BrowserOperationOutcome,
     BrowserSession,
+    ChatObservation,
+    ContextObservation,
+    DeliveryProof,
+    ProjectObservation,
     SessionDetachOutcome,
     SessionInspection,
     SessionInspectionOutcome,
+    SettledProof,
+    TurnContinuation,
+    TurnObservation,
+    TurnResult,
 )
 from claude_science_rollouts.browser.errors import (
     BrowserBoundaryError,
@@ -23,9 +37,15 @@ from claude_science_rollouts.browser.protocol import (
 )
 
 __all__ = [
+    "ApprovalCard",
+    "ApprovalObservation",
+    "ApprovalResolved",
+    "AttachmentAccepted",
     "BrowserBoundaryError",
     "BrowserBridge",
     "BrowserClient",
+    "BrowserObservationOutcome",
+    "BrowserOperationOutcome",
     "BrowserSession",
     "BrowserError",
     "BrowserProcessError",
@@ -34,8 +54,16 @@ __all__ = [
     "BrowserResponse",
     "BrowserTimeoutError",
     "BoundaryInvocation",
+    "ChatObservation",
+    "ContextObservation",
+    "DeliveryProof",
+    "ProjectObservation",
     "SessionInspection",
     "SessionInspectionOutcome",
+    "SettledProof",
+    "TurnContinuation",
+    "TurnObservation",
+    "TurnResult",
     "SessionDetachOutcome",
     "make_request",
     "parse_response",

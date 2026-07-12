@@ -1,14 +1,27 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
   SESSION_INSPECT_SOURCE,
   createDefaultHandlers,
+  createChatInspectHandler,
+  createContextInspectHandler,
+  createAttachmentUploadHandler,
+  createNewChatHandler,
+  createProjectCreateHandler,
+  createProjectInspectHandler,
+  createResolveApprovalHandler,
   createSessionAttachHandler,
   createSessionDetachHandler,
   createSessionInspectHandler,
+  createSubmitTurnWaitHandler,
+  createWaitTurnHandler,
 } from "../src/handlers.mjs";
 import { BoundaryError } from "../src/protocol.mjs";
+import { deliveryTextSha256, sha256Hex } from "../src/turns.mjs";
 
 const context = {
   deadlineMs: 15000,
@@ -308,5 +321,571 @@ test("default handlers attach an owner from BROWSER_OWNER_NAME", async () => {
   } finally {
     if (previous === undefined) delete process.env.BROWSER_OWNER_NAME;
     else process.env.BROWSER_OWNER_NAME = previous;
+  }
+});
+
+test("project inspection returns a verified rooted observation", async () => {
+  let invocation;
+  const handler = createProjectInspectHandler({
+    async runCommand(args, options) {
+      invocation = { args, options };
+      return JSON.stringify({
+        _origin: context.session.origin,
+        project_id: "project-001",
+        verified: true,
+        composer_empty: true,
+        user_turn_count: 1,
+        root_frame_id: "root-001",
+        root_state: "completed",
+        _root_project_id: "project-001",
+      });
+    },
+  });
+  assert.deepEqual(
+    await handler({ project_id: "project-001" }, context),
+    {
+      project_id: "project-001",
+      verified: true,
+      composer_empty: true,
+      user_turn_count: 1,
+      root_frame_id: "root-001",
+      root_state: "completed",
+    },
+  );
+  assert.deepEqual(invocation.options, { deadlineMs: 15000 });
+  assert.deepEqual(invocation.args.slice(0, 3), [
+    "--raw",
+    "-s=session-001",
+    "run-code",
+  ]);
+});
+
+test("chat inspection returns bounded transcript and identities", async () => {
+  const handler = createChatInspectHandler({
+    async runCommand() {
+      return JSON.stringify({
+        _origin: context.session.origin,
+        project_id: "project-001",
+        chat_id: "chat-001",
+        transcript: [
+          {
+            turn_id: "turn-user",
+            role: "user",
+            text: "Question",
+            truncated: false,
+          },
+          {
+            turn_id: "turn-assistant",
+            role: "assistant",
+            text: "Answer",
+            truncated: false,
+          },
+        ],
+        user_turn_count: 1,
+        composer_empty: true,
+        root_frame_id: "root-001",
+        response_control_id: "turn-assistant",
+        current_turn_state: "indeterminate",
+        approval_cards: [],
+        _root_project_id: "project-001",
+        _expected: {
+          project_id: "project-001",
+          chat_id: "chat-001",
+          root_frame_id: "root-001",
+        },
+      });
+    },
+  });
+  const result = await handler(
+    {
+      project_id: "project-001",
+      chat_id: "chat-001",
+      root_frame_id: "root-001",
+    },
+    context,
+  );
+  assert.equal(result.project_id, "project-001");
+  assert.equal(result.chat_id, "chat-001");
+  assert.equal(result.transcript.length, 2);
+  assert.equal(result.transcript[0].turn_id, "turn-user");
+});
+
+test("context inspection returns only skills and context hash", async () => {
+  const handler = createContextInspectHandler({
+    async runCommand() {
+      return JSON.stringify({
+        _origin: context.session.origin,
+        project_id: "project-001",
+        enabled_skills: ["Audit"],
+        context_hash: "a".repeat(64),
+      });
+    },
+  });
+  assert.deepEqual(
+    await handler({ project_id: "project-001" }, context),
+    {
+      project_id: "project-001",
+      enabled_skills: ["Audit"],
+      context_hash: "a".repeat(64),
+    },
+  );
+});
+
+test("G3a observation handlers reject origin and identity drift", async () => {
+  const navigation = createProjectInspectHandler({
+    async runCommand() {
+      return JSON.stringify({
+        _origin: "http://127.0.0.1:9999",
+        project_id: "project-001",
+      });
+    },
+  });
+  await assert.rejects(
+    navigation({ project_id: "project-001" }, context),
+    (error) => error instanceof BoundaryError && error.code === "NAVIGATION_DRIFT",
+  );
+
+  const identity = createChatInspectHandler({
+    async runCommand() {
+      return JSON.stringify({
+        _origin: context.session.origin,
+        project_id: "project-other",
+        chat_id: "chat-001",
+      });
+    },
+  });
+  await assert.rejects(
+    identity({ project_id: "project-001", chat_id: "chat-001" }, context),
+    (error) => error instanceof BoundaryError && error.code === "IDENTITY_MISMATCH",
+  );
+
+  const unexpectedRoot = createChatInspectHandler({
+    async runCommand() {
+      return JSON.stringify({
+        _origin: context.session.origin,
+        project_id: "project-001",
+        chat_id: "chat-001",
+        root_frame_id: "root-001",
+        _root_project_id: "project-001",
+      });
+    },
+  });
+  await assert.rejects(
+    unexpectedRoot({ project_id: "project-001", chat_id: "chat-001" }, context),
+    (error) => error instanceof BoundaryError && error.code === "IDENTITY_MISMATCH",
+  );
+
+  const wrongRootProject = createChatInspectHandler({
+    async runCommand() {
+      return JSON.stringify({
+        _origin: context.session.origin,
+        project_id: "project-001",
+        chat_id: "chat-001",
+        root_frame_id: "root-001",
+        _root_project_id: "project-other",
+      });
+    },
+  });
+  await assert.rejects(
+    wrongRootProject(
+      {
+        project_id: "project-001",
+        chat_id: "chat-001",
+        root_frame_id: "root-001",
+      },
+      context,
+    ),
+    (error) => error instanceof BoundaryError && error.code === "IDENTITY_MISMATCH",
+  );
+});
+
+test("G3a observation handlers reject malformed and non-object CLI output", async () => {
+  for (const payload of ["not JSON", "[]", "42"]) {
+    const handler = createProjectInspectHandler({
+      async runCommand() {
+        return payload;
+      },
+    });
+    await assert.rejects(
+      handler({ project_id: "project-001" }, context),
+      (error) => error instanceof BoundaryError && error.code === "CLI_INVALID_OUTPUT",
+    );
+  }
+});
+
+test("project creation returns only a verified fresh project", async () => {
+  let source;
+  const handler = createProjectCreateHandler({
+    async runCommand(args) {
+      source = args[3];
+      return JSON.stringify({
+        _origin: context.session.origin,
+        _mutation_attempted: true,
+        result: {
+          project_id: "project-created",
+          verified: true,
+          composer_empty: true,
+          user_turn_count: 0,
+          root_frame_id: null,
+          root_state: null,
+        },
+      });
+    },
+  });
+  const result = await handler({ name: "PBMC bare replicate" }, context);
+  assert.equal(result.project_id, "project-created");
+  assert.equal(result.user_turn_count, 0);
+  assert.match(source, /New project/);
+  assert.equal(source.match(/await create\.click\(\)/g)?.length, 1);
+});
+
+test("new chat returns a verified rootless blank chat", async () => {
+  const handler = createNewChatHandler({
+    async runCommand() {
+      return JSON.stringify({
+        _origin: context.session.origin,
+        _mutation_attempted: false,
+        result: {
+          project_id: "project-created",
+          chat_id: "chat-created",
+          transcript: [],
+          user_turn_count: 0,
+          composer_empty: true,
+          root_frame_id: null,
+          response_control_id: null,
+          current_turn_state: "indeterminate",
+          approval_cards: [],
+        },
+      });
+    },
+  });
+  const result = await handler({ project_id: "project-created" }, context);
+  assert.equal(result.chat_id, "chat-created");
+  assert.equal(result.root_frame_id, null);
+});
+
+test("attachment upload keeps the source path request-only", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "browser-g3c-"));
+  const sourcePath = join(directory, "pbmc_tiny_seed.csv");
+  writeFileSync(sourcePath, "cell_id,value\nC001,1\n");
+  const invocations = [];
+  let runCodeCalls = 0;
+  const handler = createAttachmentUploadHandler({
+    async runCommand(args) {
+      invocations.push(args);
+      if (args[2] === "upload") return "uploaded";
+      runCodeCalls += 1;
+      if (runCodeCalls === 1) {
+        return JSON.stringify({
+          _origin: context.session.origin,
+          result: { ready: true },
+        });
+      }
+      return JSON.stringify({
+        _origin: context.session.origin,
+        result: {
+          project_id: "project-created",
+          chat_id: "chat-created",
+          filename: "pbmc_tiny_seed.csv",
+          accepted: true,
+        },
+      });
+    },
+  });
+  try {
+    const result = await handler({
+      project_id: "project-created",
+      chat_id: "chat-created",
+      source_path: sourcePath,
+    }, context);
+    assert.deepEqual(result, {
+      project_id: "project-created",
+      chat_id: "chat-created",
+      filename: "pbmc_tiny_seed.csv",
+      accepted: true,
+    });
+    assert.deepEqual(invocations[1], [
+      "--raw",
+      "-s=session-001",
+      "upload",
+      sourcePath,
+    ]);
+    assert.doesNotMatch(invocations[0][3], new RegExp(sourcePath));
+    assert.doesNotMatch(invocations[2][3], new RegExp(sourcePath));
+    assert.doesNotMatch(JSON.stringify(result), new RegExp(sourcePath));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("attachment upload rejects an unavailable source before browser use", async () => {
+  let invoked = false;
+  const handler = createAttachmentUploadHandler({
+    async runCommand() {
+      invoked = true;
+    },
+  });
+  await assert.rejects(
+    handler({
+      project_id: "project-created",
+      chat_id: "chat-created",
+      source_path: "/private/tmp/missing-pbmc-seed.csv",
+    }, context),
+    (error) =>
+      error instanceof BoundaryError &&
+      error.code === "ATTACHMENT_SOURCE_INVALID" &&
+      !error.message.includes("missing-pbmc-seed"),
+  );
+  assert.equal(invoked, false);
+});
+
+test("attachment verification failure after upload is unknown and never replayed", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "browser-g3c-unknown-"));
+  const sourcePath = join(directory, "pbmc_tiny_seed.csv");
+  writeFileSync(sourcePath, "cell_id,value\nC001,1\n");
+  const invocations = [];
+  let runCodeCalls = 0;
+  const handler = createAttachmentUploadHandler({
+    async runCommand(args) {
+      invocations.push(args);
+      if (args[2] === "upload") return "uploaded";
+      runCodeCalls += 1;
+      return JSON.stringify(
+        runCodeCalls === 1
+          ? { _origin: context.session.origin, result: { ready: true } }
+          : {
+              _origin: context.session.origin,
+              _boundary_error: "ATTACHMENT_NOT_VERIFIED",
+            },
+      );
+    },
+  });
+  try {
+    await assert.rejects(
+      handler({
+        project_id: "project-created",
+        chat_id: "chat-created",
+        source_path: sourcePath,
+      }, context),
+      (error) =>
+        error instanceof BoundaryError &&
+        error.code === "UPLOAD_OUTCOME_UNKNOWN" &&
+        error.outcome === "unknown_outcome" &&
+        error.retryable === false,
+    );
+    assert.equal(invocations.filter((args) => args[2] === "upload").length, 1);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function turnResult({ state = "settled", continuation = null } = {}) {
+  const delivery = {
+    root_frame_id: "root-001",
+    authored_prompt_sha256: sha256Hex("Do one thing"),
+    delivery_text_sha256: deliveryTextSha256("Do one thing"),
+    normalized_user_turn_id: "turn-user-new",
+  };
+  return {
+    project_id: "project-001",
+    chat_id: "chat-001",
+    root_frame_id: "root-001",
+    turn_state: state,
+    root_created: false,
+    delivery,
+    settled: state === "settled"
+      ? {
+          stop_hidden: true,
+          stable_samples: 2,
+          new_response_control_id: "turn-assistant-new",
+        }
+      : null,
+    approval: null,
+    continuation,
+  };
+}
+
+test("submit verifies raw hash before one bounded browser invocation", async () => {
+  let invocations = 0;
+  const handler = createSubmitTurnWaitHandler({
+    async runCommand(args) {
+      invocations += 1;
+      assert.equal(args[2], "run-code");
+      return JSON.stringify({
+        _origin: context.session.origin,
+        _mutation_attempted: true,
+        result: turnResult(),
+      });
+    },
+  });
+  const payload = {
+    project_id: "project-001",
+    chat_id: "chat-001",
+    root_mode: "existing",
+    root_frame_id: "root-001",
+    prompt: "Do one thing",
+    authored_prompt_sha256: sha256Hex("Do one thing"),
+  };
+  assert.equal((await handler(payload, context)).turn_state, "settled");
+  assert.equal(invocations, 1);
+  await assert.rejects(
+    handler({ ...payload, authored_prompt_sha256: "a".repeat(64) }, context),
+    (error) =>
+      error instanceof BoundaryError && error.code === "PROMPT_HASH_MISMATCH",
+  );
+  assert.equal(invocations, 1);
+});
+
+test("delivered unsettled submit returns a continuation without replay", async () => {
+  const continuation = {
+    project_id: "project-001",
+    chat_id: "chat-001",
+    root_frame_id: "root-001",
+    authored_prompt_sha256: sha256Hex("Do one thing"),
+    delivery_text_sha256: deliveryTextSha256("Do one thing"),
+    normalized_user_turn_id: "turn-user-new",
+    baseline_response_control_id: "turn-assistant-old",
+  };
+  const handler = createSubmitTurnWaitHandler({
+    async runCommand() {
+      return JSON.stringify({
+        _origin: context.session.origin,
+        _mutation_attempted: true,
+        result: turnResult({ state: "busy", continuation }),
+      });
+    },
+  });
+  const result = await handler(
+    {
+      project_id: "project-001",
+      chat_id: "chat-001",
+      root_mode: "existing",
+      root_frame_id: "root-001",
+      prompt: "Do one thing",
+      authored_prompt_sha256: sha256Hex("Do one thing"),
+    },
+    context,
+  );
+  assert.deepEqual(result.continuation, continuation);
+});
+
+test("wait consumes hashes and never serializes a submit action", async () => {
+  const continuation = {
+    project_id: "project-001",
+    chat_id: "chat-001",
+    root_frame_id: "root-001",
+    authored_prompt_sha256: sha256Hex("Do one thing"),
+    delivery_text_sha256: deliveryTextSha256("Do one thing"),
+    normalized_user_turn_id: "turn-user-new",
+    baseline_response_control_id: "turn-assistant-old",
+  };
+  let source;
+  const handler = createWaitTurnHandler({
+    async runCommand(args) {
+      source = args[3];
+      return JSON.stringify({
+        _origin: context.session.origin,
+        result: turnResult(),
+      });
+    },
+  });
+  const result = await handler(
+    { project_id: "project-001", chat_id: "chat-001", continuation },
+    context,
+  );
+  assert.equal(result.delivery.authored_prompt_sha256, continuation.authored_prompt_sha256);
+  assert.equal(result.delivery.delivery_text_sha256, continuation.delivery_text_sha256);
+  assert.doesNotMatch(source, /insertText|await send\.click/);
+});
+
+test("ambiguous post-submit state becomes a non-retryable unknown outcome", async () => {
+  const handler = createSubmitTurnWaitHandler({
+    async runCommand() {
+      return JSON.stringify({
+        _origin: context.session.origin,
+        _mutation_attempted: true,
+        _boundary_error: "AMBIGUOUS_APPROVAL",
+      });
+    },
+  });
+  await assert.rejects(
+    handler(
+      {
+        project_id: "project-001",
+        chat_id: "chat-001",
+        root_mode: "new",
+        prompt: "Do one thing",
+        authored_prompt_sha256: sha256Hex("Do one thing"),
+      },
+      context,
+    ),
+    (error) =>
+      error instanceof BoundaryError &&
+      error.code === "SUBMIT_OUTCOME_UNKNOWN" &&
+      error.outcome === "unknown_outcome" &&
+      error.retryable === false,
+  );
+});
+
+test("approval resolution requires exact identity and verified clearance", async () => {
+  const handler = createResolveApprovalHandler({
+    async runCommand() {
+      return JSON.stringify({
+        _origin: context.session.origin,
+        _mutation_attempted: true,
+        result: {
+          project_id: "project-001",
+          chat_id: "chat-001",
+          root_frame_id: "root-001",
+          card_id: "approval:abc:0",
+          decision: "allow_for_conversation",
+          verified_cleared: true,
+        },
+      });
+    },
+  });
+  const result = await handler(
+    {
+      project_id: "project-001",
+      chat_id: "chat-001",
+      root_frame_id: "root-001",
+      card_id: "approval:abc:0",
+      decision: "allow_for_conversation",
+      expected_fingerprint: "c".repeat(64),
+    },
+    context,
+  );
+  assert.equal(result.verified_cleared, true);
+});
+
+test("approval ambiguity stops before mutation and post-click uncertainty is unknown", async () => {
+  const payload = {
+    project_id: "project-001",
+    chat_id: "chat-001",
+    root_frame_id: "root-001",
+    card_id: "approval:abc:0",
+    decision: "allow_for_conversation",
+    expected_fingerprint: "c".repeat(64),
+  };
+  for (const [attempted, expectedCode, expectedOutcome] of [
+    [false, "AMBIGUOUS_APPROVAL", "not_started"],
+    [true, "APPROVAL_OUTCOME_UNKNOWN", "unknown_outcome"],
+  ]) {
+    const handler = createResolveApprovalHandler({
+      async runCommand() {
+        return JSON.stringify({
+          _origin: context.session.origin,
+          _mutation_attempted: attempted,
+          _boundary_error: "AMBIGUOUS_APPROVAL",
+        });
+      },
+    });
+    await assert.rejects(
+      handler(payload, context),
+      (error) =>
+        error instanceof BoundaryError &&
+        error.code === expectedCode &&
+        error.outcome === expectedOutcome,
+    );
   }
 });
