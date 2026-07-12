@@ -5024,6 +5024,12 @@ function cyStyle(){
     { selector: '.faded', style: { 'opacity': 0.22 } },
     { selector: 'edge.lit', style: {
         'line-color': lit, 'target-arrow-color': lit, 'width': 2, 'z-index': 20, 'opacity': 1 } },
+    // the shift-drag box-select rectangle: a clean accent OUTLINE, near-transparent fill (was a solid
+    // filled block). active-bg-opacity 0 drops the tap "ripple" halo too.
+    { selector: 'core', style: {
+        'selection-box-color': lit, 'selection-box-opacity': 0.07,
+        'selection-box-border-color': lit, 'selection-box-border-width': 1.5,
+        'active-bg-opacity': 0, 'active-bg-size': 0 } },
   ];
 }
 
@@ -5055,19 +5061,30 @@ function initCy(){
       else { lastId = id; lastAt = now; }
       return;
     }
+    // a tap leaves cytoscape's :selected set on the node; we never use cy selection (membership is
+    // state.reviewSet + .picked), and a lingering :selected suppresses a later boxselect on that same
+    // node. Cytoscape applies its selection AFTER this handler, so an immediate unselect is a no-op —
+    // defer one tick so it clears post-selection. Without this the last-tapped node can't be re-boxed.
+    setTimeout(() => t.unselect(), 0);
     if (state.reviewMode){ toggleReviewMember(id); return; }   // review mode: a click TOGGLES membership
     selectNode(id);
     if (dbl){ zoomToNode(t); lastId = null; lastAt = 0; }
     else { lastId = id; lastAt = now; }
   });
   cy.on('tap', (e) => { if (e.target === cy) deselect(); });
-  cy.on('cxttap', 'node', (e) => { if (!e.target.isParent()) toggleLineageInReview(e.target.id()); });   // right-click -> toggle node + upstream cone
+  cy.on('cxttap', 'node', (e) => { if (!e.target.isParent()){ e.target.unselect(); toggleLineageInReview(e.target.id()); } });   // right-click -> toggle node + upstream cone
   // shift-drag box (enabled only in review mode) folds the enclosed nodes into the set; keep cy's own
   // selection clean since membership lives in state.reviewSet + the .picked outline, not cy :selected.
   cy.on('boxselect', 'node', (e) => {
     if (state.reviewMode && !e.target.isParent()) addReviewMember(e.target.id());
     e.target.unselect();
   });
+  // the selection-box canvas is trapped below the HTML node overlay (its cy wrapper is a lower
+  // stacking context), so the box would draw UNDER the cards. Lift the whole cy container above the
+  // overlay only WHILE a box is being dragged, then restore — the box shows on top during selection,
+  // and the normal cards-over-canvas layering returns the instant the drag ends.
+  cy.on('boxstart', () => { const c = cy.container(); if (c) c.style.zIndex = '30'; });
+  cy.on('boxend', () => { const c = cy.container(); if (c) c.style.zIndex = ''; });
 
   // manual pan / zoom un-sticks auto-fit (programmatic fit does not touch this)
   el.cyBox.addEventListener('wheel', () => setAutofit(false), { passive: true });
