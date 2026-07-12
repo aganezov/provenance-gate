@@ -128,9 +128,11 @@ def _cones(
       vcones[version_id] = {artifact_id: {live version ids}} in its consumed lineage: the version
         itself plus what its producing cell consumed. A cell's co-*output* siblings are excluded —
         they are co-produced peers, never inputs — so one a consumer never read can't fake a mix.
-        But ALL of a cell's inputs are attributed to EACH of its outputs on purpose: the agent could
-        reason over any consumed input to write any output, so the explicit per-file dep edges are a
-        lower bound and we keep the safe over-approximation (conservative for a trust check).
+        But ALL of a cell's inputs are attributed to EACH of its outputs on purpose. CS records
+        dependencies per output version, so this coarsens below the resolution it offers, on
+        purpose: within one agent turn a read can shape any output through shared code with no
+        recorded edge, so the per-output edges are a lower bound and we take the safe
+        over-approximation (conservative for a trust check).
       in_cones[node_id] = the merged lineage of what the node consumed (the cone its verdict reads).
     Each produced version subsumes older versions of its artifact, so a linear revision collapses.
     Assumes a DAG — always true for immutable-artifact provenance (a version can only depend on

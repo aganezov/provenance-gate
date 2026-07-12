@@ -15,12 +15,33 @@ forces now and what it would unlock.
 | No writable overlay store (storage and write limits) | Stateless deterministic checks only; nothing persists between runs | The human-owned layer: assumptions, surfaced-value links, version-stamped confirmations, and the full four-colour verdict. Recurring attestations could graduate into new deterministic checks over time. |
 | No persistent UI tile in-CS. A tile seems possible but is gated to trusted vendors right now, and its capabilities are unverified. | The in-CS cockpit is a re-rendered snapshot (it's already live in the server setup). | A live cockpit inside CS, updating as the agent works. Snapshots become optional, kept only when you want a frozen record. |
 | No stateful agent annotations | Every helper is a pure function | The agent can leave marks (reviewed, waived, owned) and carry trust state across a session. |
-| Shallow, cell-granular dependency capture | A conservative over-approximation on inputs; comparability sites can't be detected automatically | Precise per-output lineage, and automatic detection of shared-root-processed-differently joins, so nobody has to spot the fork by eye. |
+| No automatic comparability-site detection | A person picks the fork in the cockpit; the gate doesn't find "two arms of a shared root, processed differently" by itself | Auto-detected recombination joins (LCA / path-divergence over the DAG), so nobody has to spot the fork by eye |
 | The skill runs as a draft, not published | Human-invoked, or agent-invoked with a draft-activation phrase | The autonomous trigger: the agent runs the pre-write check before an expensive step on its own. |
 
 On the first row: the LLM is already in the loop, because it's the agent, which runs the skill and
 reasons over the briefs. `host.llm` is there for a separate in-skill call, but we route through the
 agent. So closing that gap is wiring, not model access.
+
+## The audit granularity is a dial
+
+The gate audits at the cell (one agent turn), but nothing in the core fixes that. CS records
+dependencies per output version, and the audit already computes a cone per version internally, so the
+unit of a node is a `derive` choice. Three settings reach the same core:
+
+- version: a node is one artifact version, walking CS's raw per-output edges. Least conservative;
+  `composition.csv` no longer inherits a sibling's `qc_params` read. Fewer false positives, at the
+  risk of missing a within-turn influence that left no edge.
+- cell (current default): one agent turn, all its inputs attributed to each output. The conservative
+  default (D3). On valid (acyclic) provenance this flags a superset of the version setting, never
+  fewer mixes than the raw edges, only more.
+- frame: a whole task's cells pooled. More conservative still, but the shared-execution-state
+  argument that justifies the cell weakens across separate cells, so it over-flags without the same
+  warrant.
+
+Exposing the dial is a small change: it lives in `derive` and the input-surface aggregation, while
+the mix and currency logic is already version-cone based and wouldn't move. We ship the cell default
+because a trust gate should take the lower bound within the unit that shares execution state, but the
+seam is there.
 
 ## Cheaper at scale, with a store
 

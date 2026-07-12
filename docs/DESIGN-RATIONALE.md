@@ -89,13 +89,23 @@ recompute and dropped it, because a focused render can bake an incomplete verdic
 false clean.
 
 ### D3 — Conservative on inputs, precise on outputs
-Every output of a cell inherits all of the cell's inputs; sibling outputs don't. The explicit
-file-read edges are a lower bound on what an output really depends on, for two reasons. First, a cell
-reasons over everything it read, and reasoning leaves no file-read edge. Second, CS's capture is
-shallow and cell-granular: it doesn't reliably record which output used which input, so per-output
-precision isn't available anyway. A trust check should err toward false positives over false
-negatives, so we keep the over-approximation. Sibling outputs are different; they're peers, not
-ancestors, so they're excluded.
+Every output of a cell inherits all of the cell's inputs; sibling outputs don't. It's worth being
+exact about why, because CS gives us more resolution than we use. CS records dependencies per output
+version, not per cell: it will record that `composition.csv` depended only on `cells.qc.csv` while
+its sibling `qc_summary.csv` also depended on `qc_params.csv`, and those sets are genuinely distinct.
+So per-output precision is available; we coarsen to the cell on purpose. Inside a single agent turn
+those recorded edges are a lower bound: one block of code can load a file once and let it shape
+several outputs while only one gets a recorded read edge, and we can't tell used-it from didn't
+without reading the code, which we refuse to do. A trust check should err toward false positives over
+false negatives, so within the turn we take the lower bound and give every output all of the cell's
+inputs. Sibling outputs are peers, not ancestors, so they're excluded.
+
+The cost is directional. Aggregating to the cell can only add versions to a cone, never remove them,
+so on the acyclic provenance CS produces (A1) the cell-level audit flags a superset of what the raw
+per-output edges would: it never reports fewer mixes than the finer edges, only more. The
+over-approximation shows up as possible false positives, not as missed conflicts, which is the safe
+direction for a trust gate, and the finer per-output edges stay in the substrate, so a reviewer can
+drop back to them to see which output actually carried the conflict.
 
 This one nearly got "fixed" as a bug before we saw it was right. The flag applies to a cell that
 consumed two divergent versions. A cell that only revised its own output — wrote v1, then v2 — isn't
