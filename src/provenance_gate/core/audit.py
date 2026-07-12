@@ -10,9 +10,10 @@ Two deterministic, structural checks per computation, from provenance alone (not
                 a node that produces a version of an artifact SUBSUMES older versions of it in its
                 forward cone, so only versions living on independent branches can collide.
 
-Computed on read, never stored (the verdict is computed). One topological pass builds each node's
-input cone, memoized per producer — we never re-walk the graph per node. The cone tracks, per
-artifact_id, the set of *live* version ids reaching the node; >1 is a mix.
+Computed on read, never stored (the verdict is computed). One topological pass builds a cone per
+PRODUCED VERSION (its own consumed lineage); a node's mix is judged over the merge of just what it
+consumed — never a producing cell's sibling outputs, so a co-output can't fake a mix. The cone
+tracks, per artifact_id, the set of *live* version ids reaching the node; >1 is a mix.
 
 Entry points:
   audit_graph(graph)         -> {node_id: Verdict}   # the cockpit's per-node rail
@@ -96,31 +97,41 @@ def _toposort(node_ids: list[str], deps: dict[str, set[str]]) -> list[str]:
     return order
 
 
-def _out_cones(graph: Graph, deps: dict[str, set[str]]) -> dict[str, dict[str, set[str]]]:
-    """One topological pass: node_id -> {artifact_id: {live version ids}} it carries forward.
-    A node's outputs subsume older versions of the same artifact, so linear revisions collapse."""
-    nodes = {n.id: n for n in graph.nodes}
-    out: dict[str, dict[str, set[str]]] = {}
-    for nid in _toposort([n.id for n in graph.nodes], deps):
-        cone: dict[str, set[str]] = {}
-        for pid in deps[nid]:
-            if pid not in out:
-                continue  # cycle recovery: predecessor not yet computed (DAG shouldn't cycle)
-            for aid, vers in out[pid].items():
-                cone.setdefault(aid, set()).update(vers)
-        for a in nodes[nid].output_surface:      # produced version subsumes prior of same artifact
-            cone[a.artifact_id] = {a.artifact_version_id}
-        out[nid] = cone
-    return out
-
-
-def _in_cone(out_cones: dict[str, dict[str, set[str]]], producers: set[str]) -> dict[str, set[str]]:
-    """Merge the out-cones of a node's input producers (before the node's own subsumption)."""
+def _merge_consumed(input_surface, vcones: dict, ref_of: dict) -> dict:
+    """The mix cone of an input surface: merge each CONSUMED version's own lineage cone. A consumed
+    version with no producer cone (a dangling input, or a cycle) seeds as its own source, so it
+    still counts toward a mix. This is what a node's version_mix is judged over — only what it
+    consumed, never a producing cell's sibling outputs."""
     ic: dict[str, set[str]] = {}
-    for pid in producers:
-        for aid, vers in out_cones[pid].items():
+    for r in input_surface:
+        u = r.artifact_version_id
+        uc = vcones.get(u)
+        if uc is None:
+            uc = {ref_of[u].artifact_id: {u}} if u in ref_of else {}
+        for aid, vers in uc.items():
             ic.setdefault(aid, set()).update(vers)
     return ic
+
+
+def _cones(graph: Graph, deps: dict[str, set[str]], ref_of: dict):
+    """One topological pass. Returns (vcones, in_cones):
+      vcones[version_id] = {artifact_id: {live version ids}} in its consumed lineage: the version
+        itself plus what its producing cell consumed. Per-VERSION, so a cell's co-outputs get
+        independent cones and a sibling a consumer never read can't leak in and fake a mix.
+      in_cones[node_id] = the merged lineage of what the node consumed (the cone its verdict reads).
+    Each produced version subsumes older versions of its artifact, so a linear revision collapses.
+    """
+    nodes = {n.id: n for n in graph.nodes}
+    vcones: dict[str, dict[str, set[str]]] = {}
+    in_cones: dict[str, dict[str, set[str]]] = {}
+    for nid in _toposort([n.id for n in graph.nodes], deps):
+        base = _merge_consumed(nodes[nid].input_surface, vcones, ref_of)
+        in_cones[nid] = base
+        for a in nodes[nid].output_surface:
+            vc = {aid: set(vers) for aid, vers in base.items()}
+            vc[a.artifact_id] = {a.artifact_version_id}   # subsumes prior of its own artifact
+            vcones[a.artifact_version_id] = vc
+    return vcones, in_cones
 
 
 def _verdict(node: Node, in_cone: dict[str, set[str]], ref_of: dict[str, ArtifactRef]) -> Verdict:
@@ -153,8 +164,8 @@ def audit_graph(graph: Graph) -> dict[str, Verdict]:
     producer_of = _producer_map(graph)
     ref_of = _ref_map(graph)
     deps = _deps(graph, producer_of)
-    out_cones = _out_cones(graph, deps)
-    return {n.id: _verdict(n, _in_cone(out_cones, deps[n.id]), ref_of) for n in graph.nodes}
+    _vcones, in_cones = _cones(graph, deps, ref_of)
+    return {n.id: _verdict(n, in_cones[n.id], ref_of) for n in graph.nodes}
 
 
 def issues(items) -> list:
@@ -197,11 +208,9 @@ def audit_inputs(graph: Graph, input_version_ids: list[str]) -> Verdict:
     if unresolvable:
         raise ValueError(f"audit_inputs: version ids not in graph: {unresolvable}")
     deps = _deps(graph, producer_of)
-    out_cones = _out_cones(graph, deps)
+    vcones, _in_cones = _cones(graph, deps, ref_of)
     planned = Node(
         id="\x00planned", cs_project_id=graph.cs_project_id, kind="computation", label="planned",
         input_surface=tuple(ref_of[v] for v in input_version_ids),
     )
-    producers = {producer_of[v] for v in input_version_ids if v in producer_of}
-    producers.discard(planned.id)
-    return _verdict(planned, _in_cone(out_cones, producers), ref_of)
+    return _verdict(planned, _merge_consumed(planned.input_surface, vcones, ref_of), ref_of)

@@ -94,6 +94,48 @@ def test_version_mix_on_divergent_branches():
     assert v["cB"].level == audit.CLEAN         # revises X, not stale
 
 
+def test_co_output_sibling_does_not_fake_a_mix():
+    # THE regression: cA produces x_a AND qc v1; cB produces x_b AND qc v2 (co-outputs). cC consumes
+    # x_a + x_b ONLY — never qc. The divergent qc are siblings of cC's ancestors, off its
+    # consumption path, so they must NOT reconverge into a version_mix at cC. (Holds whether or not
+    # qc v1->v2 are linearly related — the audit judges consumption, not co-production.)
+    xa = ref("xa", "XA", 1, 1, True, "x_a.csv")
+    xb = ref("xb", "XB", 1, 1, True, "x_b.csv")
+    qc1 = ref("qc1", "QC", 1, 2, False, "qc.csv")   # qc head is v2; v1 is non-current
+    qc2 = ref("qc2", "QC", 2, 2, True, "qc.csv")
+    cA = node("cA", outputs=[xa, qc1])              # x_a and qc v1 are SIBLING outputs of one cell
+    cB = node("cB", outputs=[xb, qc2])
+    cC = node("cC", inputs=[xa, xb], outputs=[ref("rep", "R", 1, 1, True, "report.csv")])
+    v = audit.audit_graph(Graph(cs_project_id="p", nodes=(cA, cB, cC)))
+    assert v["cC"].level == audit.CLEAN             # consumed only x_a/x_b -> no qc mix
+    assert v["cA"].level == audit.CLEAN and v["cB"].level == audit.CLEAN
+
+
+def test_two_versions_from_one_cell_do_not_fake_a_mix():
+    # a single cell writes qc v1 AND qc v2 (a revision) plus x.csv; a downstream cell
+    # reads only x.csv. The two qc versions on the surface must not reconverge into a mix
+    # for a consumer that never read qc — the per-version cone keeps each output's lineage apart.
+    # The result is independent of output_surface order (old subsumption was order-sensitive).
+    qc1 = ref("qc1", "QC", 1, 2, False, "qc.csv")
+    qc2 = ref("qc2", "QC", 2, 2, True, "qc.csv")
+    x = ref("x", "X", 1, 1, True, "x.csv")
+    c0 = node("c0", outputs=[qc1, qc2, x])
+    d = node("d", inputs=[x], outputs=[ref("y", "Y", 1, 1, True, "y.csv")])
+    v = audit.audit_graph(Graph(cs_project_id="p", nodes=(c0, d)))
+    assert v["c0"].level == audit.CLEAN and v["d"].level == audit.CLEAN
+
+
+def test_audit_inputs_ignores_co_output_siblings():
+    # the pre-write path (audit_inputs) must judge consumed lineage too: a planned node reading
+    # x_a + x_b whose producers ALSO emitted divergent qc siblings is clean: qc was never consumed.
+    xa = ref("xa", "XA", 1, 1, True, "x_a.csv")
+    xb = ref("xb", "XB", 1, 1, True, "x_b.csv")
+    cA = node("cA", outputs=[xa, ref("qc1", "QC", 1, 2, False, "qc.csv")])
+    cB = node("cB", outputs=[xb, ref("qc2", "QC", 2, 2, True, "qc.csv")])
+    g = Graph(cs_project_id="p", nodes=(cA, cB))
+    assert audit.audit_inputs(g, ["xa", "xb"]).level == audit.CLEAN
+
+
 def test_audit_inputs_hypothetical_planned_write():
     # audit a PLANNED node reading a.csv + b.csv before it exists — the skill's pre-write case
     src, cB, cX, cY, av1, bv1 = _divergent_nodes()
