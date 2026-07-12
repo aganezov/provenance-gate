@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeVar
+from typing import Generic, TypeVar
 
 from claude_science_rollouts.oracle.snapshot import open_readonly, snapshot_operon
 
@@ -57,11 +57,11 @@ class SnapshotBarrierConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class StableSnapshot:
+class StableSnapshot(Generic[Observation]):
     """The final retained copy and the observation that crossed the barrier."""
 
     path: Path
-    observation: object
+    observation: Observation
     attempts: int
 
 
@@ -99,6 +99,10 @@ def observe_project(conn: sqlite3.Connection, project_id: str) -> ProjectObserva
         """,
         (project_id,),
     ).fetchall()
+    # NOTE: depends_on_version_id may reference versions in other projects, which are not fetched
+    # here. Stability is complete only if CS artifact_versions rows are immutable once written
+    # (content-addressed by checksum) — a new foreign target then appears as a new dependency EDGE
+    # row, which is captured below.
     dependencies = conn.execute(
         """
         SELECT d.id, d.artifact_version_id, d.depends_on_version_id, d.reference_name
@@ -188,10 +192,10 @@ async def await_stable_project_snapshot(
     run_dir: str | Path,
     *,
     config: SnapshotBarrierConfig | None = None,
-    observer: Observer[object] = observe_project,
+    observer: Observer[Observation] = observe_project,
     sleep: Sleeper = asyncio.sleep,
     monotonic: Callable[[], float] = time.monotonic,
-) -> StableSnapshot:
+) -> StableSnapshot[Observation]:
     """Retain the second of two adjacent equal project snapshots as the final episode copy.
 
     Polling copies rotate so only the previous and current observations coexist. All transient
@@ -203,7 +207,7 @@ async def await_stable_project_snapshot(
     snapshot_root = _prepare_snapshot_root(Path(run_dir))
     polling_root = snapshot_root / ".polling"
     final_dir = snapshot_root / "final"
-    if final_dir.exists():
+    if final_dir.exists() or final_dir.is_symlink():
         raise FileExistsError(f"final snapshot already exists: {final_dir}")
 
     _prepare_snapshot_directory(polling_root, snapshot_root)
