@@ -167,18 +167,40 @@ def test_focus_is_sorted_by_filename_not_node_order():
 
 # ---- verdicts= override: narrow the shown structure, not the vigilance (review_selection) ----
 
+def _transitive_mix_records():
+    # raw -> c1(qc v1), c2(qc v2); c3 MERGES both into merged.csv; c4 reads merged.csv -> final.csv.
+    # c4's mix is TRANSITIVE (it never consumes qc directly), so inducing to just c4 and auditing
+    # it alone loses the mix — the exact case the verdicts= override is for.
+    versions = {
+        "raw": _v("raw", "a_raw", 1, None, "raw.csv"),
+        "qc1": _v("qc1", "a_qc", 1, "c1", "cells.qc.csv", "qc2", 2),
+        "qc2": _v("qc2", "a_qc", 2, "c2", "cells.qc.csv", "qc2", 2),
+        "mrg": _v("mrg", "a_mrg", 1, "c3", "merged.csv"),
+        "fin": _v("fin", "a_fin", 1, "c4", "final.csv"),
+    }
+    deps = [
+        {"consumer_v": "qc1", "input_v": "raw", "reference_name": "raw.csv"},
+        {"consumer_v": "qc2", "input_v": "raw", "reference_name": "raw.csv"},
+        {"consumer_v": "mrg", "input_v": "qc1", "reference_name": "cells.qc.csv"},
+        {"consumer_v": "mrg", "input_v": "qc2", "reference_name": "cells.qc.csv"},
+        {"consumer_v": "fin", "input_v": "mrg", "reference_name": "merged.csv"},
+    ]
+    cells = {"c1": _cell("c1", 1), "c2": _cell("c2", 2), "c3": _cell("c3", 3), "c4": _cell("c4", 4)}
+    return versions, deps, cells, _FRAME
+
+
 def test_verdicts_override_carries_wider_audit_into_a_subgraph():
-    # induce the version_mix graph down to JUST the terminal (c3), but pass the FULL-graph verdicts:
-    # c3 must STILL flag version_mix even though its induced input cone is empty. This lets a
-    # selective review exclude a trusted trunk without going blind to a conflict hiding in it.
-    g = derive.derive_graph("proj_x", *_mix_records(), built_at=1.0)
-    verdicts = audit.audit_graph(g)                 # c3 flagged version_mix over the whole graph
-    induced = induced_subgraph(g, {"c3"})
+    # induce a TRANSITIVE-mix graph down to JUST terminal c4 (which reads merged.csv, not qc), but
+    # pass the FULL-graph verdicts: c4 must STILL flag version_mix even though its induced cone
+    # has no qc. This lets a selective review exclude a trusted trunk without going blind.
+    g = derive.derive_graph("proj_x", *_transitive_mix_records(), built_at=1.0)
+    verdicts = audit.audit_graph(g)                 # c4 flagged version_mix over the whole graph
+    induced = induced_subgraph(g, {"c4"})
     kit = review_kit(induced, "selection", verdicts=verdicts)
     assert kit["nodes"] == 1 and kit["scope"] == "selection"
     assert any(f["verdict"] == VERSION_MIX for f in kit["flags"])   # vigilance survived the induce
-    # load-bearing: auditing the induced graph ALONE loses the version_mix — with c3's producer cone
-    # gone it degrades to a stale_input, so the override is what carries the true full verdict.
+    # load-bearing: auditing the induced graph ALONE loses the transitive mix — merged's producer
+    # cone is gone, so c4 degrades to clean; the override is what carries the true full verdict.
     assert not any(f["verdict"] == VERSION_MIX for f in review_kit(induced)["flags"])
 
 
