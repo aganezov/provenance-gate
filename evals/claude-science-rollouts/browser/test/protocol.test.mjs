@@ -50,6 +50,39 @@ function chatObservation(overrides = {}) {
   };
 }
 
+function continuation(overrides = {}) {
+  return {
+    project_id: "project-001",
+    chat_id: "chat-001",
+    root_frame_id: "root-001",
+    authored_prompt_sha256: "a".repeat(64),
+    delivery_text_sha256: "b".repeat(64),
+    normalized_user_turn_id: "turn-user-new",
+    baseline_response_control_id: "turn-assistant-old",
+    ...overrides,
+  };
+}
+
+function turnResult(overrides = {}) {
+  return {
+    project_id: "project-001",
+    chat_id: "chat-001",
+    root_frame_id: "root-001",
+    turn_state: "busy",
+    root_created: false,
+    delivery: {
+      root_frame_id: "root-001",
+      authored_prompt_sha256: "a".repeat(64),
+      delivery_text_sha256: "b".repeat(64),
+      normalized_user_turn_id: "turn-user-new",
+    },
+    settled: null,
+    approval: null,
+    continuation: continuation(),
+    ...overrides,
+  };
+}
+
 test("canonical operation set is loaded from protocol.json", () => {
   const spec = JSON.parse(
     readFileSync(new URL("../protocol.json", import.meta.url), "utf8"),
@@ -138,6 +171,136 @@ test("G3a request payloads are exact and identity typed", () => {
     }))),
     (error) =>
       error instanceof BoundaryError && error.code === "INVALID_IDENTIFIER",
+  );
+});
+
+test("G3b requests enforce root modes, hashes, continuations, and decisions", () => {
+  const submit = parseRequestText(JSON.stringify(request({
+    operation: "turn.submit_wait",
+    payload: {
+      project_id: "project-001",
+      chat_id: "chat-001",
+      root_mode: "new",
+      prompt: "Do one thing",
+      authored_prompt_sha256: "a".repeat(64),
+    },
+  })));
+  assert.equal(submit.payload.root_mode, "new");
+  assert.throws(
+    () => parseRequestText(JSON.stringify(request({
+      operation: "turn.submit_wait",
+      payload: { ...submit.payload, root_frame_id: "root-001" },
+    }))),
+    (error) => error instanceof BoundaryError && error.code === "INVALID_FIELDS",
+  );
+  assert.throws(
+    () => parseRequestText(JSON.stringify(request({
+      operation: "turn.submit_wait",
+      payload: { ...submit.payload, root_mode: "existing" },
+    }))),
+    (error) => error instanceof BoundaryError && error.code === "INVALID_FIELDS",
+  );
+  assert.doesNotThrow(() => parseRequestText(JSON.stringify(request({
+    operation: "turn.wait",
+    payload: {
+      project_id: "project-001",
+      chat_id: "chat-001",
+      continuation: continuation(),
+    },
+  }))));
+  assert.throws(
+    () => parseRequestText(JSON.stringify(request({
+      operation: "turn.wait",
+      payload: {
+        project_id: "project-other",
+        chat_id: "chat-001",
+        continuation: continuation(),
+      },
+    }))),
+    (error) => error instanceof BoundaryError,
+  );
+  assert.doesNotThrow(() => parseRequestText(JSON.stringify(request({
+    operation: "approval.resolve",
+    payload: {
+      project_id: "project-001",
+      chat_id: "chat-001",
+      root_frame_id: "root-001",
+      card_id: "approval:abc:0",
+      decision: "allow_for_conversation",
+      expected_fingerprint: "c".repeat(64),
+    },
+  }))));
+});
+
+test("G3b turn results distinguish continuation from settlement", () => {
+  const parsed = parseRequestText(JSON.stringify(request({
+    operation: "turn.wait",
+    payload: {
+      project_id: "project-001",
+      chat_id: "chat-001",
+      continuation: continuation(),
+    },
+  })));
+  assert.doesNotThrow(() => completedResponse(parsed, turnResult(), 10));
+  const settled = turnResult({
+    turn_state: "settled",
+    settled: {
+      stop_hidden: true,
+      stable_samples: 2,
+      new_response_control_id: "turn-assistant-new",
+    },
+    continuation: null,
+  });
+  assert.doesNotThrow(() => completedResponse(parsed, settled, 10));
+  for (const invalid of [
+    turnResult({ continuation: null }),
+    turnResult({ turn_state: "settled", continuation: null }),
+    turnResult({
+      continuation: continuation({ delivery_text_sha256: "c".repeat(64) }),
+    }),
+  ]) {
+    assert.throws(
+      () => completedResponse(parsed, invalid, 10),
+      (error) => error instanceof BoundaryError,
+    );
+  }
+  const mismatched = turnResult({
+    delivery: {
+      ...turnResult().delivery,
+      authored_prompt_sha256: "c".repeat(64),
+    },
+    continuation: continuation({ authored_prompt_sha256: "c".repeat(64) }),
+  });
+  assert.throws(
+    () => completedResponse(parsed, mismatched, 10),
+    (error) => error instanceof BoundaryError && error.code === "INVALID_RESPONSE",
+  );
+});
+
+test("approval resolution result requires verified clearance", () => {
+  const parsed = parseRequestText(JSON.stringify(request({
+    operation: "approval.resolve",
+    payload: {
+      project_id: "project-001",
+      chat_id: "chat-001",
+      root_frame_id: "root-001",
+      card_id: "approval:abc:0",
+      decision: "deny",
+      expected_fingerprint: "c".repeat(64),
+    },
+  })));
+  const result = {
+    project_id: "project-001",
+    chat_id: "chat-001",
+    root_frame_id: "root-001",
+    card_id: "approval:abc:0",
+    decision: "deny",
+    verified_cleared: true,
+  };
+  assert.doesNotThrow(() => completedResponse(parsed, result, 2));
+  assert.throws(
+    () => completedResponse(parsed, { ...result, verified_cleared: false }, 2),
+    (error) => error instanceof BoundaryError,
   );
 });
 
@@ -281,6 +444,10 @@ test("context observations are exact sorted and hashed", () => {
     context_hash: "b".repeat(64),
   };
   assert.deepEqual(completedResponse(parsed, observation, 2).result, observation);
+  assert.doesNotThrow(() => completedResponse(parsed, {
+    ...observation,
+    enabled_skills: [],
+  }, 2));
   assert.throws(
     () => completedResponse(parsed, {
       ...observation,

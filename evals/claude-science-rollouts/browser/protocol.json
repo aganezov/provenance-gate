@@ -19,6 +19,7 @@
     "chat.open",
     "chat.inspect",
     "turn.submit_wait",
+    "turn.wait",
     "approval.resolve"
   ]
 }

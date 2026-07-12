@@ -7,11 +7,15 @@ import {
   createChatInspectHandler,
   createContextInspectHandler,
   createProjectInspectHandler,
+  createResolveApprovalHandler,
   createSessionAttachHandler,
   createSessionDetachHandler,
   createSessionInspectHandler,
+  createSubmitTurnWaitHandler,
+  createWaitTurnHandler,
 } from "../src/handlers.mjs";
 import { BoundaryError } from "../src/protocol.mjs";
+import { deliveryTextSha256, sha256Hex } from "../src/turns.mjs";
 
 const context = {
   deadlineMs: 15000,
@@ -499,6 +503,217 @@ test("G3a observation handlers reject malformed and non-object CLI output", asyn
     await assert.rejects(
       handler({ project_id: "project-001" }, context),
       (error) => error instanceof BoundaryError && error.code === "CLI_INVALID_OUTPUT",
+    );
+  }
+});
+
+function turnResult({ state = "settled", continuation = null } = {}) {
+  const delivery = {
+    root_frame_id: "root-001",
+    authored_prompt_sha256: sha256Hex("Do one thing"),
+    delivery_text_sha256: deliveryTextSha256("Do one thing"),
+    normalized_user_turn_id: "turn-user-new",
+  };
+  return {
+    project_id: "project-001",
+    chat_id: "chat-001",
+    root_frame_id: "root-001",
+    turn_state: state,
+    root_created: false,
+    delivery,
+    settled: state === "settled"
+      ? {
+          stop_hidden: true,
+          stable_samples: 2,
+          new_response_control_id: "turn-assistant-new",
+        }
+      : null,
+    approval: null,
+    continuation,
+  };
+}
+
+test("submit verifies raw hash before one bounded browser invocation", async () => {
+  let invocations = 0;
+  const handler = createSubmitTurnWaitHandler({
+    async runCommand(args) {
+      invocations += 1;
+      assert.equal(args[2], "run-code");
+      return JSON.stringify({
+        _origin: context.session.origin,
+        _mutation_attempted: true,
+        result: turnResult(),
+      });
+    },
+  });
+  const payload = {
+    project_id: "project-001",
+    chat_id: "chat-001",
+    root_mode: "existing",
+    root_frame_id: "root-001",
+    prompt: "Do one thing",
+    authored_prompt_sha256: sha256Hex("Do one thing"),
+  };
+  assert.equal((await handler(payload, context)).turn_state, "settled");
+  assert.equal(invocations, 1);
+  await assert.rejects(
+    handler({ ...payload, authored_prompt_sha256: "a".repeat(64) }, context),
+    (error) =>
+      error instanceof BoundaryError && error.code === "PROMPT_HASH_MISMATCH",
+  );
+  assert.equal(invocations, 1);
+});
+
+test("delivered unsettled submit returns a continuation without replay", async () => {
+  const continuation = {
+    project_id: "project-001",
+    chat_id: "chat-001",
+    root_frame_id: "root-001",
+    authored_prompt_sha256: sha256Hex("Do one thing"),
+    delivery_text_sha256: deliveryTextSha256("Do one thing"),
+    normalized_user_turn_id: "turn-user-new",
+    baseline_response_control_id: "turn-assistant-old",
+  };
+  const handler = createSubmitTurnWaitHandler({
+    async runCommand() {
+      return JSON.stringify({
+        _origin: context.session.origin,
+        _mutation_attempted: true,
+        result: turnResult({ state: "busy", continuation }),
+      });
+    },
+  });
+  const result = await handler(
+    {
+      project_id: "project-001",
+      chat_id: "chat-001",
+      root_mode: "existing",
+      root_frame_id: "root-001",
+      prompt: "Do one thing",
+      authored_prompt_sha256: sha256Hex("Do one thing"),
+    },
+    context,
+  );
+  assert.deepEqual(result.continuation, continuation);
+});
+
+test("wait consumes hashes and never serializes a submit action", async () => {
+  const continuation = {
+    project_id: "project-001",
+    chat_id: "chat-001",
+    root_frame_id: "root-001",
+    authored_prompt_sha256: sha256Hex("Do one thing"),
+    delivery_text_sha256: deliveryTextSha256("Do one thing"),
+    normalized_user_turn_id: "turn-user-new",
+    baseline_response_control_id: "turn-assistant-old",
+  };
+  let source;
+  const handler = createWaitTurnHandler({
+    async runCommand(args) {
+      source = args[3];
+      return JSON.stringify({
+        _origin: context.session.origin,
+        result: turnResult(),
+      });
+    },
+  });
+  const result = await handler(
+    { project_id: "project-001", chat_id: "chat-001", continuation },
+    context,
+  );
+  assert.equal(result.delivery.authored_prompt_sha256, continuation.authored_prompt_sha256);
+  assert.equal(result.delivery.delivery_text_sha256, continuation.delivery_text_sha256);
+  assert.doesNotMatch(source, /insertText|await send\.click/);
+});
+
+test("ambiguous post-submit state becomes a non-retryable unknown outcome", async () => {
+  const handler = createSubmitTurnWaitHandler({
+    async runCommand() {
+      return JSON.stringify({
+        _origin: context.session.origin,
+        _mutation_attempted: true,
+        _boundary_error: "AMBIGUOUS_APPROVAL",
+      });
+    },
+  });
+  await assert.rejects(
+    handler(
+      {
+        project_id: "project-001",
+        chat_id: "chat-001",
+        root_mode: "new",
+        prompt: "Do one thing",
+        authored_prompt_sha256: sha256Hex("Do one thing"),
+      },
+      context,
+    ),
+    (error) =>
+      error instanceof BoundaryError &&
+      error.code === "SUBMIT_OUTCOME_UNKNOWN" &&
+      error.outcome === "unknown_outcome" &&
+      error.retryable === false,
+  );
+});
+
+test("approval resolution requires exact identity and verified clearance", async () => {
+  const handler = createResolveApprovalHandler({
+    async runCommand() {
+      return JSON.stringify({
+        _origin: context.session.origin,
+        _mutation_attempted: true,
+        result: {
+          project_id: "project-001",
+          chat_id: "chat-001",
+          root_frame_id: "root-001",
+          card_id: "approval:abc:0",
+          decision: "allow_for_conversation",
+          verified_cleared: true,
+        },
+      });
+    },
+  });
+  const result = await handler(
+    {
+      project_id: "project-001",
+      chat_id: "chat-001",
+      root_frame_id: "root-001",
+      card_id: "approval:abc:0",
+      decision: "allow_for_conversation",
+      expected_fingerprint: "c".repeat(64),
+    },
+    context,
+  );
+  assert.equal(result.verified_cleared, true);
+});
+
+test("approval ambiguity stops before mutation and post-click uncertainty is unknown", async () => {
+  const payload = {
+    project_id: "project-001",
+    chat_id: "chat-001",
+    root_frame_id: "root-001",
+    card_id: "approval:abc:0",
+    decision: "allow_for_conversation",
+    expected_fingerprint: "c".repeat(64),
+  };
+  for (const [attempted, expectedCode, expectedOutcome] of [
+    [false, "AMBIGUOUS_APPROVAL", "not_started"],
+    [true, "APPROVAL_OUTCOME_UNKNOWN", "unknown_outcome"],
+  ]) {
+    const handler = createResolveApprovalHandler({
+      async runCommand() {
+        return JSON.stringify({
+          _origin: context.session.origin,
+          _mutation_attempted: attempted,
+          _boundary_error: "AMBIGUOUS_APPROVAL",
+        });
+      },
+    });
+    await assert.rejects(
+      handler(payload, context),
+      (error) =>
+        error instanceof BoundaryError &&
+        error.code === expectedCode &&
+        error.outcome === expectedOutcome,
     );
   }
 });

@@ -31,6 +31,7 @@ const MAX_TRANSCRIPT_TURNS = 256;
 const MAX_APPROVAL_CARDS = 8;
 const MAX_ENABLED_SKILLS = 256;
 const MAX_TURN_TEXT_BYTES = 16384;
+const MAX_PROMPT_BYTES = 65536;
 const CREDENTIAL_KEYS = new Set([
   "authorization",
   "cookie",
@@ -134,6 +135,93 @@ export function validateRequest(value) {
       );
     }
   }
+  if (request.operation === "turn.submit_wait") {
+    exactKeys(
+      request.payload,
+      [
+        "project_id",
+        "chat_id",
+        "root_mode",
+        "prompt",
+        "authored_prompt_sha256",
+        "root_frame_id",
+      ],
+      "request.payload",
+      ["root_frame_id"],
+    );
+    identifier(request.payload.project_id, "request.payload.project_id");
+    identifier(request.payload.chat_id, "request.payload.chat_id");
+    if (!["new", "existing"].includes(request.payload.root_mode)) {
+      throw new BoundaryError("INVALID_TEXT", "request.payload.root_mode is invalid");
+    }
+    boundedText(request.payload.prompt, MAX_PROMPT_BYTES, "request.payload.prompt");
+    sha256(
+      request.payload.authored_prompt_sha256,
+      "request.payload.authored_prompt_sha256",
+    );
+    const hasRoot = "root_frame_id" in request.payload;
+    if (request.payload.root_mode === "new" && hasRoot) {
+      throw new BoundaryError(
+        "INVALID_FIELDS",
+        "A new-root submission cannot include root_frame_id",
+      );
+    }
+    if (request.payload.root_mode === "existing" && !hasRoot) {
+      throw new BoundaryError(
+        "INVALID_FIELDS",
+        "An existing-root submission requires root_frame_id",
+      );
+    }
+    if (hasRoot) {
+      identifier(request.payload.root_frame_id, "request.payload.root_frame_id");
+    }
+  }
+  if (request.operation === "turn.wait") {
+    exactKeys(
+      request.payload,
+      ["project_id", "chat_id", "continuation"],
+      "request.payload",
+    );
+    identifier(request.payload.project_id, "request.payload.project_id");
+    identifier(request.payload.chat_id, "request.payload.chat_id");
+    validateTurnContinuation(
+      object(request.payload.continuation, "request.payload.continuation"),
+      "request.payload.continuation",
+    );
+    if (
+      request.payload.continuation.project_id !== request.payload.project_id ||
+      request.payload.continuation.chat_id !== request.payload.chat_id
+    ) {
+      throw new BoundaryError(
+        "INVALID_RESPONSE",
+        "Continuation identity contradicts the wait request",
+      );
+    }
+  }
+  if (request.operation === "approval.resolve") {
+    exactKeys(
+      request.payload,
+      [
+        "project_id",
+        "chat_id",
+        "root_frame_id",
+        "card_id",
+        "decision",
+        "expected_fingerprint",
+      ],
+      "request.payload",
+    );
+    for (const key of ["project_id", "chat_id", "root_frame_id", "card_id"]) {
+      identifier(request.payload[key], `request.payload.${key}`);
+    }
+    if (!["allow_for_conversation", "deny"].includes(request.payload.decision)) {
+      throw new BoundaryError("INVALID_TEXT", "request.payload.decision is invalid");
+    }
+    sha256(
+      request.payload.expected_fingerprint,
+      "request.payload.expected_fingerprint",
+    );
+  }
   // Redundant when reached via parseRequestText (raw text was already size-checked), but
   // validateRequest is exported and may be called directly on an untrusted object — keep it.
   if (jsonBytes(request) > MAX_REQUEST_BYTES) {
@@ -147,7 +235,7 @@ export function validateRequest(value) {
 
 export function completedResponse(request, result, elapsedMs) {
   const validatedResult = object(result, "result");
-  validateOperationResult(request.operation, validatedResult);
+  validateOperationResult(request.operation, validatedResult, request.payload);
   return validateResponse({
     protocol_version: PROTOCOL_VERSION,
     request_id: request.request_id,
@@ -158,7 +246,7 @@ export function completedResponse(request, result, elapsedMs) {
   });
 }
 
-function validateOperationResult(operation, result) {
+function validateOperationResult(operation, result, requestPayload) {
   if (operation === "session.detach") {
     exactKeys(result, ["detached"], "response.result");
     boolean(result.detached, "response.result.detached");
@@ -174,6 +262,29 @@ function validateOperationResult(operation, result) {
   }
   if (operation === "agent_context.inspect") {
     validateContextObservation(result);
+    return;
+  }
+  if (["turn.submit_wait", "turn.wait"].includes(operation)) {
+    validateTurnResult(result);
+    validateTurnCorrelation(operation, result, requestPayload);
+    return;
+  }
+  if (operation === "approval.resolve") {
+    validateApprovalResolved(result);
+    for (const key of [
+      "project_id",
+      "chat_id",
+      "root_frame_id",
+      "card_id",
+      "decision",
+    ]) {
+      if (result[key] !== requestPayload[key]) {
+        throw new BoundaryError(
+          "INVALID_RESPONSE",
+          "Approval result does not correlate to its request",
+        );
+      }
+    }
     return;
   }
   if (!["session.attach", "session.inspect"].includes(operation)) return;
@@ -280,25 +391,10 @@ function validateChatObservation(result) {
       "response.result.current_turn_state is invalid",
     );
   }
-  array(
+  validateApprovalCards(
     result.approval_cards,
-    MAX_APPROVAL_CARDS,
     "response.result.approval_cards",
   );
-  const cardIds = new Set();
-  for (const [index, card] of result.approval_cards.entries()) {
-    const path = `response.result.approval_cards[${index}]`;
-    object(card, path);
-    exactKeys(card, ["card_id", "fingerprint", "title", "kind"], path);
-    identifier(card.card_id, `${path}.card_id`);
-    if (cardIds.has(card.card_id)) {
-      throw new BoundaryError("INVALID_RESPONSE", "Approval card IDs must be unique");
-    }
-    cardIds.add(card.card_id);
-    sha256(card.fingerprint, `${path}.fingerprint`);
-    boundedText(card.title, 512, `${path}.title`);
-    identifier(card.kind, `${path}.kind`);
-  }
   if (
     (result.current_turn_state === "approval_required") !==
     (result.approval_cards.length > 0)
@@ -355,6 +451,278 @@ function validateContextObservation(result) {
     throw new BoundaryError("INVALID_RESPONSE", "Enabled skills must be sorted");
   }
   sha256(result.context_hash, "response.result.context_hash");
+}
+
+function validateTurnResult(result) {
+  exactKeys(
+    result,
+    [
+      "project_id",
+      "chat_id",
+      "root_frame_id",
+      "turn_state",
+      "root_created",
+      "delivery",
+      "settled",
+      "approval",
+      "continuation",
+    ],
+    "response.result",
+  );
+  identifier(result.project_id, "response.result.project_id");
+  identifier(result.chat_id, "response.result.chat_id");
+  nullableIdentifier(result.root_frame_id, "response.result.root_frame_id");
+  if (!TURN_STATES.has(result.turn_state)) {
+    throw new BoundaryError("INVALID_RESPONSE", "Turn result state is invalid");
+  }
+  boolean(result.root_created, "response.result.root_created");
+
+  if (result.delivery !== null) {
+    validateDeliveryProof(
+      object(result.delivery, "response.result.delivery"),
+      "response.result.delivery",
+    );
+    if (result.delivery.root_frame_id !== result.root_frame_id) {
+      throw new BoundaryError(
+        "INVALID_RESPONSE",
+        "Delivery root contradicts the turn result",
+      );
+    }
+  }
+  if (result.settled !== null) {
+    validateSettledProof(
+      object(result.settled, "response.result.settled"),
+      "response.result.settled",
+    );
+  }
+  if (result.approval !== null) {
+    validateApprovalObservation(
+      object(result.approval, "response.result.approval"),
+      "response.result.approval",
+    );
+  }
+  if (result.continuation !== null) {
+    validateTurnContinuation(
+      object(result.continuation, "response.result.continuation"),
+      "response.result.continuation",
+    );
+  }
+
+  const delivered = result.delivery !== null;
+  const isSettled = result.turn_state === "settled";
+  if (isSettled !== (result.settled !== null)) {
+    throw new BoundaryError(
+      "INVALID_RESPONSE",
+      "Settled state contradicts the settlement proof",
+    );
+  }
+  if ((result.turn_state === "approval_required") !== (result.approval !== null)) {
+    throw new BoundaryError(
+      "INVALID_RESPONSE",
+      "Approval state contradicts the approval observation",
+    );
+  }
+  if (delivered && !isSettled && result.continuation === null) {
+    throw new BoundaryError(
+      "INVALID_RESPONSE",
+      "A delivered unsettled turn requires a continuation",
+    );
+  }
+  if ((!delivered || isSettled) && result.continuation !== null) {
+    throw new BoundaryError(
+      "INVALID_RESPONSE",
+      "Continuation is only valid for delivered unsettled turns",
+    );
+  }
+  if (delivered && result.root_frame_id === null) {
+    throw new BoundaryError(
+      "INVALID_RESPONSE",
+      "A delivered turn requires a root identity",
+    );
+  }
+  if (result.continuation !== null) {
+    const continuation = result.continuation;
+    if (
+      continuation.project_id !== result.project_id ||
+      continuation.chat_id !== result.chat_id ||
+      continuation.root_frame_id !== result.root_frame_id ||
+      continuation.authored_prompt_sha256 !==
+        result.delivery.authored_prompt_sha256 ||
+      continuation.delivery_text_sha256 !==
+        result.delivery.delivery_text_sha256 ||
+      continuation.normalized_user_turn_id !==
+        result.delivery.normalized_user_turn_id
+    ) {
+      throw new BoundaryError(
+        "INVALID_RESPONSE",
+        "Continuation contradicts the delivery proof",
+      );
+    }
+  }
+}
+
+function validateDeliveryProof(value, path) {
+  exactKeys(
+    value,
+    [
+      "root_frame_id",
+      "authored_prompt_sha256",
+      "delivery_text_sha256",
+      "normalized_user_turn_id",
+    ],
+    path,
+  );
+  identifier(value.root_frame_id, `${path}.root_frame_id`);
+  sha256(value.authored_prompt_sha256, `${path}.authored_prompt_sha256`);
+  sha256(value.delivery_text_sha256, `${path}.delivery_text_sha256`);
+  identifier(value.normalized_user_turn_id, `${path}.normalized_user_turn_id`);
+}
+
+function validateSettledProof(value, path) {
+  exactKeys(
+    value,
+    ["stop_hidden", "stable_samples", "new_response_control_id"],
+    path,
+  );
+  if (value.stop_hidden !== true) {
+    throw new BoundaryError(
+      "INVALID_RESPONSE",
+      `${path}.stop_hidden must be true`,
+    );
+  }
+  boundedInteger(value.stable_samples, 2, 100, `${path}.stable_samples`);
+  identifier(
+    value.new_response_control_id,
+    `${path}.new_response_control_id`,
+  );
+}
+
+function validateTurnContinuation(value, path) {
+  exactKeys(
+    value,
+    [
+      "project_id",
+      "chat_id",
+      "root_frame_id",
+      "authored_prompt_sha256",
+      "delivery_text_sha256",
+      "normalized_user_turn_id",
+      "baseline_response_control_id",
+    ],
+    path,
+  );
+  identifier(value.project_id, `${path}.project_id`);
+  identifier(value.chat_id, `${path}.chat_id`);
+  identifier(value.root_frame_id, `${path}.root_frame_id`);
+  sha256(value.authored_prompt_sha256, `${path}.authored_prompt_sha256`);
+  sha256(value.delivery_text_sha256, `${path}.delivery_text_sha256`);
+  identifier(value.normalized_user_turn_id, `${path}.normalized_user_turn_id`);
+  nullableIdentifier(
+    value.baseline_response_control_id,
+    `${path}.baseline_response_control_id`,
+  );
+}
+
+function validateApprovalObservation(value, path) {
+  exactKeys(value, ["cards"], path);
+  validateApprovalCards(value.cards, `${path}.cards`);
+  if (value.cards.length !== 1) {
+    throw new BoundaryError(
+      "INVALID_RESPONSE",
+      "Approval observation must contain one unique card",
+    );
+  }
+}
+
+function validateApprovalCards(cards, path) {
+  array(cards, MAX_APPROVAL_CARDS, path);
+  const cardIds = new Set();
+  for (const [index, cardValue] of cards.entries()) {
+    const cardPath = `${path}[${index}]`;
+    const card = object(cardValue, cardPath);
+    exactKeys(card, ["card_id", "fingerprint", "title", "kind"], cardPath);
+    identifier(card.card_id, `${cardPath}.card_id`);
+    if (cardIds.has(card.card_id)) {
+      throw new BoundaryError("INVALID_RESPONSE", "Approval card IDs must be unique");
+    }
+    cardIds.add(card.card_id);
+    sha256(card.fingerprint, `${cardPath}.fingerprint`);
+    boundedText(card.title, 512, `${cardPath}.title`);
+    identifier(card.kind, `${cardPath}.kind`);
+  }
+}
+
+function validateApprovalResolved(result) {
+  exactKeys(
+    result,
+    [
+      "project_id",
+      "chat_id",
+      "root_frame_id",
+      "card_id",
+      "decision",
+      "verified_cleared",
+    ],
+    "response.result",
+  );
+  for (const key of ["project_id", "chat_id", "root_frame_id", "card_id"]) {
+    identifier(result[key], `response.result.${key}`);
+  }
+  if (!["allow_for_conversation", "deny"].includes(result.decision)) {
+    throw new BoundaryError("INVALID_RESPONSE", "Approval decision is invalid");
+  }
+  if (result.verified_cleared !== true) {
+    throw new BoundaryError(
+      "INVALID_RESPONSE",
+      "Resolved approval must be verified cleared",
+    );
+  }
+}
+
+function validateTurnCorrelation(operation, result, payload) {
+  if (
+    result.project_id !== payload.project_id ||
+    result.chat_id !== payload.chat_id
+  ) {
+    throw new BoundaryError(
+      "INVALID_RESPONSE",
+      "Turn result does not correlate to its request",
+    );
+  }
+  const expected = operation === "turn.submit_wait"
+    ? {
+        authored_prompt_sha256: payload.authored_prompt_sha256,
+        root_frame_id: payload.root_frame_id ?? null,
+      }
+    : {
+        authored_prompt_sha256:
+          payload.continuation.authored_prompt_sha256,
+        delivery_text_sha256:
+          payload.continuation.delivery_text_sha256,
+        normalized_user_turn_id:
+          payload.continuation.normalized_user_turn_id,
+        root_frame_id: payload.continuation.root_frame_id,
+      };
+  if (
+    !result.delivery ||
+    result.delivery.authored_prompt_sha256 !==
+      expected.authored_prompt_sha256 ||
+    ("delivery_text_sha256" in expected &&
+      result.delivery.delivery_text_sha256 !== expected.delivery_text_sha256) ||
+    ("normalized_user_turn_id" in expected &&
+      result.delivery.normalized_user_turn_id !==
+        expected.normalized_user_turn_id) ||
+    (operation === "turn.submit_wait" &&
+      payload.root_mode === "existing" &&
+      result.root_frame_id !== expected.root_frame_id) ||
+    (operation === "turn.wait" &&
+      result.root_frame_id !== expected.root_frame_id)
+  ) {
+    throw new BoundaryError(
+      "INVALID_RESPONSE",
+      "Turn proof does not correlate to its request",
+    );
+  }
 }
 
 export function errorResponse(request, error, elapsedMs) {

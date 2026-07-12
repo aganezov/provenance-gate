@@ -5,6 +5,13 @@ import {
   buildContextInspectSource,
   buildProjectInspectSource,
 } from "./observations.mjs";
+import {
+  buildResolveApprovalSource,
+  buildSubmitTurnSource,
+  buildWaitTurnSource,
+  deliveryTextSha256,
+  sha256Hex,
+} from "./turns.mjs";
 
 const SESSION_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 
@@ -219,6 +226,211 @@ export function createContextInspectHandler({ runCommand = runCli } = {}) {
   };
 }
 
+export function createSubmitTurnWaitHandler({ runCommand = runCli } = {}) {
+  return async function submitTurnWait(payload, context) {
+    if (sha256Hex(payload.prompt) !== payload.authored_prompt_sha256) {
+      throw new BoundaryError(
+        "PROMPT_HASH_MISMATCH",
+        "Raw prompt bytes do not match authored_prompt_sha256",
+      );
+    }
+    const expectedDeliverySha256 = deliveryTextSha256(payload.prompt);
+    let wrapper;
+    try {
+      wrapper = await runBoundaryCode(
+        runCommand,
+        buildSubmitTurnSource({
+          origin: context.session.origin,
+          projectId: payload.project_id,
+          chatId: payload.chat_id,
+          rootMode: payload.root_mode,
+          rootFrameId: payload.root_frame_id ?? null,
+          prompt: payload.prompt,
+          authoredPromptSha256: payload.authored_prompt_sha256,
+          expectedDeliverySha256,
+          deadlineMs: context.deadlineMs,
+        }),
+        context,
+      );
+    } catch (error) {
+      throw mutationFailure("SUBMIT", error);
+    }
+    return unwrapTurnResult(wrapper, context, {
+      projectId: payload.project_id,
+      chatId: payload.chat_id,
+      rootFrameId: payload.root_frame_id ?? null,
+      rootMode: payload.root_mode,
+      authoredPromptSha256: payload.authored_prompt_sha256,
+      deliveryTextSha256: expectedDeliverySha256,
+      mutationAction: "SUBMIT",
+    });
+  };
+}
+
+export function createWaitTurnHandler({ runCommand = runCli } = {}) {
+  return async function waitTurn(payload, context) {
+    const continuation = payload.continuation;
+    const wrapper = await runBoundaryCode(
+      runCommand,
+      buildWaitTurnSource({
+        origin: context.session.origin,
+        continuation,
+        deadlineMs: context.deadlineMs,
+      }),
+      context,
+    );
+    return unwrapTurnResult(wrapper, context, {
+      projectId: payload.project_id,
+      chatId: payload.chat_id,
+      rootFrameId: continuation.root_frame_id,
+      rootMode: "existing",
+      authoredPromptSha256: continuation.authored_prompt_sha256,
+      deliveryTextSha256: continuation.delivery_text_sha256,
+    });
+  };
+}
+
+export function createResolveApprovalHandler({ runCommand = runCli } = {}) {
+  return async function resolveApproval(payload, context) {
+    let wrapper;
+    try {
+      wrapper = await runBoundaryCode(
+        runCommand,
+        buildResolveApprovalSource({
+          origin: context.session.origin,
+          projectId: payload.project_id,
+          chatId: payload.chat_id,
+          rootFrameId: payload.root_frame_id,
+          cardId: payload.card_id,
+          decision: payload.decision,
+          expectedFingerprint: payload.expected_fingerprint,
+        }),
+        context,
+      );
+    } catch (error) {
+      throw mutationFailure("APPROVAL", error);
+    }
+    if (
+      wrapper._origin !== context.session.origin &&
+      wrapper._mutation_attempted !== false
+    ) {
+      throw mutationFailure(
+        "APPROVAL",
+        new BoundaryError("NAVIGATION_DRIFT", "Approval outcome is unknown"),
+      );
+    }
+    verifyOrigin(wrapper, context);
+    if (wrapper._boundary_error) {
+      if (wrapper._mutation_attempted) {
+        throw mutationFailure(
+          "APPROVAL",
+          new BoundaryError(wrapper._boundary_error, "Approval outcome is unknown"),
+        );
+      }
+      throw browserStateError(wrapper._boundary_error);
+    }
+    const result = wrapper.result;
+    if (
+      !result ||
+      result.project_id !== payload.project_id ||
+      result.chat_id !== payload.chat_id ||
+      result.root_frame_id !== payload.root_frame_id ||
+      result.card_id !== payload.card_id ||
+      result.decision !== payload.decision ||
+      result.verified_cleared !== true
+    ) {
+      throw mutationFailure(
+        "APPROVAL",
+        new BoundaryError(
+          "IDENTITY_MISMATCH",
+          "Approval result identity is inconsistent",
+        ),
+      );
+    }
+    return result;
+  };
+}
+
+async function runBoundaryCode(runCommand, source, context) {
+  const stdout = await runCommand(
+    ["--raw", `-s=${context.session.session_id}`, "run-code", source],
+    { deadlineMs: context.deadlineMs },
+  );
+  const result = parseCliJson(stdout);
+  if (result === null || typeof result !== "object" || Array.isArray(result)) {
+    throw new BoundaryError(
+      "CLI_INVALID_OUTPUT",
+      "Browser CLI returned a non-object value",
+      { retryable: true },
+    );
+  }
+  return result;
+}
+
+function unwrapTurnResult(wrapper, context, expected) {
+  if (
+    wrapper._origin !== context.session.origin &&
+    wrapper._mutation_attempted !== false &&
+    expected.mutationAction
+  ) {
+    throw mutationFailure(
+      expected.mutationAction,
+      new BoundaryError("NAVIGATION_DRIFT", "Turn outcome is unknown"),
+    );
+  }
+  verifyOrigin(wrapper, context);
+  if (wrapper._boundary_error) {
+    if (wrapper._mutation_attempted && expected.mutationAction) {
+      throw mutationFailure(
+        expected.mutationAction,
+        new BoundaryError(wrapper._boundary_error, "Turn outcome is unknown"),
+      );
+    }
+    throw browserStateError(wrapper._boundary_error);
+  }
+  const result = wrapper.result;
+  if (
+    !result ||
+    result.project_id !== expected.projectId ||
+    result.chat_id !== expected.chatId ||
+    (expected.rootMode === "existing" &&
+      result.root_frame_id !== expected.rootFrameId) ||
+    !result.delivery ||
+    result.delivery.authored_prompt_sha256 !== expected.authoredPromptSha256 ||
+    result.delivery.delivery_text_sha256 !== expected.deliveryTextSha256 ||
+    result.delivery.root_frame_id !== result.root_frame_id
+  ) {
+    if (expected.mutationAction) {
+      throw mutationFailure(
+        expected.mutationAction,
+        new BoundaryError(
+          "IDENTITY_MISMATCH",
+          "Turn result identity or prompt proof is inconsistent",
+        ),
+      );
+    }
+    throw identityMismatch("Turn result identity or prompt proof is inconsistent");
+  }
+  return result;
+}
+
+function browserStateError(code) {
+  const messages = {
+    AMBIGUOUS_APPROVAL: "Approval state is ambiguous",
+    APPROVAL_NOT_CLEARED: "Approval clearance could not be verified",
+    DELIVERY_MISMATCH: "Delivered turn does not match the expected prompt",
+    DELIVERY_NOT_CONFIRMED: "Prompt delivery could not be confirmed",
+    IDENTITY_MISMATCH: "Browser identity is inconsistent",
+    MALFORMED_BROWSER_STATE: "Browser state is malformed or ambiguous",
+    NAVIGATION_DRIFT: "Browser session navigated away from the expected origin",
+  };
+  return new BoundaryError(
+    Object.hasOwn(messages, code) ? code : "MALFORMED_BROWSER_STATE",
+    messages[code] ?? "Browser state is malformed or ambiguous",
+    { retryable: false },
+  );
+}
+
 async function runObservation(runCommand, source, context) {
   const stdout = await runCommand(
     ["--raw", `-s=${context.session.session_id}`, "run-code", source],
@@ -350,5 +562,8 @@ export function createDefaultHandlers(options = {}) {
     "project.inspect": createProjectInspectHandler(options),
     "chat.inspect": createChatInspectHandler(options),
     "agent_context.inspect": createContextInspectHandler(options),
+    "turn.submit_wait": createSubmitTurnWaitHandler(options),
+    "turn.wait": createWaitTurnHandler(options),
+    "approval.resolve": createResolveApprovalHandler(options),
   };
 }

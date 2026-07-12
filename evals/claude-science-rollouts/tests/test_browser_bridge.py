@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
 from claude_science_rollouts.browser import (
     ApprovalCard,
+    ApprovalResolved,
     BrowserBridge,
     BrowserClient,
     BrowserProcessError,
@@ -18,8 +20,12 @@ from claude_science_rollouts.browser import (
     BrowserTimeoutError,
     ChatObservation,
     ContextObservation,
+    DeliveryProof,
     ProjectObservation,
+    SettledProof,
+    TurnContinuation,
     TurnObservation,
+    TurnResult,
     make_request,
     parse_response,
 )
@@ -235,6 +241,173 @@ def test_g3a_response_validation_rejects_transcript_contradictions() -> None:
     result["response_control_id"] = "turn-user"
     with pytest.raises(BrowserProtocolError, match="assistant turn"):
         parse_response(json.dumps(response), chat_request)
+
+
+def test_context_observation_accepts_empty_enabled_set() -> None:
+    context_request = make_request(
+        "agent_context.inspect",
+        request_id="context-empty",
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+        deadline_ms=15_000,
+        payload={"project_id": "project-001"},
+    )
+    response = {
+        "protocol_version": 1,
+        "request_id": "context-empty",
+        "operation": "agent_context.inspect",
+        "outcome": "completed",
+        "elapsed_ms": 1,
+        "result": {
+            "project_id": "project-001",
+            "enabled_skills": [],
+            "context_hash": "a" * 64,
+        },
+    }
+    parsed = parse_response(json.dumps(response), context_request)
+    assert parsed.result is not None
+    assert parsed.result["enabled_skills"] == []
+
+
+def test_g3b_requests_are_exact_and_root_mode_typed() -> None:
+    prompt = "Do one thing"
+    digest = sha256(prompt.encode()).hexdigest()
+    request = make_request(
+        "turn.submit_wait",
+        request_id="turn-001",
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+        deadline_ms=30_000,
+        payload={
+            "project_id": "project-001",
+            "chat_id": "chat-001",
+            "root_mode": "new",
+            "prompt": prompt,
+            "authored_prompt_sha256": digest,
+        },
+    )
+    assert request.payload["root_mode"] == "new"
+    with pytest.raises(BrowserProtocolError, match="cannot include"):
+        make_request(
+            "turn.submit_wait",
+            request_id="turn-002",
+            session_id="session-001",
+            origin="http://127.0.0.1:8875",
+            deadline_ms=30_000,
+            payload={**request.payload, "root_frame_id": "root-001"},
+        )
+    with pytest.raises(BrowserProtocolError, match="requires"):
+        make_request(
+            "turn.submit_wait",
+            request_id="turn-003",
+            session_id="session-001",
+            origin="http://127.0.0.1:8875",
+            deadline_ms=30_000,
+            payload={**request.payload, "root_mode": "existing"},
+        )
+
+
+def test_typed_g3b_submit_continuation_wait_and_approval(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is not installed")
+    client = BrowserClient(
+        bridge=BrowserBridge((node, str(MOCK_BOUNDARY)), cwd=tmp_path),
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+    )
+    session = BrowserSession(client)
+    session.attach(request_id="attach-001")
+    prompt = "needs wait"
+    authored_hash = sha256(prompt.encode()).hexdigest()
+    submitted = session.submit_turn_wait(
+        "project-001",
+        "chat-001",
+        "new",
+        prompt,
+        authored_hash,
+        request_id="turn-submit",
+    )
+    assert submitted.outcome == "completed"
+    assert submitted.result == TurnResult(
+        project_id="project-001",
+        chat_id="chat-001",
+        root_frame_id="root-created",
+        turn_state="busy",
+        root_created=True,
+        delivery=DeliveryProof(
+            root_frame_id="root-created",
+            authored_prompt_sha256=authored_hash,
+            delivery_text_sha256=authored_hash,
+            normalized_user_turn_id="turn-user-new",
+        ),
+        settled=None,
+        approval=None,
+        continuation=TurnContinuation(
+            project_id="project-001",
+            chat_id="chat-001",
+            root_frame_id="root-created",
+            authored_prompt_sha256=authored_hash,
+            delivery_text_sha256=authored_hash,
+            normalized_user_turn_id="turn-user-new",
+            baseline_response_control_id="turn-assistant-old",
+        ),
+    )
+    assert submitted.result.continuation is not None
+    waited = session.wait_turn(
+        "project-001",
+        "chat-001",
+        submitted.result.continuation,
+        request_id="turn-wait",
+    )
+    assert waited.result is not None
+    assert waited.result.turn_state == "settled"
+    assert waited.result.delivery == submitted.result.delivery
+    assert waited.result.settled == SettledProof(
+        stop_hidden=True,
+        stable_samples=2,
+        new_response_control_id="turn-assistant-new",
+    )
+    resolved = session.resolve_approval(
+        "project-001",
+        "chat-001",
+        "root-created",
+        "approval:abc:0",
+        "allow_for_conversation",
+        request_id="approval-001",
+        expected_fingerprint="c" * 64,
+    )
+    assert resolved.result == ApprovalResolved(
+        project_id="project-001",
+        chat_id="chat-001",
+        root_frame_id="root-created",
+        card_id="approval:abc:0",
+        decision="allow_for_conversation",
+        verified_cleared=True,
+    )
+    session.detach(request_id="detach-001")
+
+
+def test_g3b_raw_prompt_hash_mismatch_stops_before_browser_action(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is not installed")
+    client = BrowserClient(
+        bridge=BrowserBridge((node, str(MOCK_BOUNDARY)), cwd=tmp_path),
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+    )
+    outcome = client.submit_turn_wait(
+        "project-001",
+        "chat-001",
+        "new",
+        "Do one thing",
+        "a" * 64,
+        request_id="turn-mismatch",
+    )
+    assert outcome.outcome == "not_started"
+    assert outcome.error is not None
+    assert outcome.error.code == "PROMPT_HASH_MISMATCH"
 
 
 def test_real_python_to_node_mock_round_trip() -> None:

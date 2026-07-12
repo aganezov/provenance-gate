@@ -32,6 +32,7 @@ OPERATIONS = frozenset(
         "chat.open",
         "chat.inspect",
         "turn.submit_wait",
+        "turn.wait",
         "approval.resolve",
     }
 )
@@ -55,6 +56,7 @@ _MAX_TRANSCRIPT_TURNS = 256
 _MAX_APPROVAL_CARDS = 8
 _MAX_ENABLED_SKILLS = 256
 _MAX_TURN_TEXT_BYTES = 16_384
+_MAX_PROMPT_BYTES = 65_536
 _CREDENTIAL_KEYS = frozenset(
     {"authorization", "cookie", "credential", "credentials", "password", "secret", "token"}
 )
@@ -144,6 +146,56 @@ def make_request(
         _identifier(body["chat_id"], "payload.chat_id")
         if "root_frame_id" in body:
             _identifier(body["root_frame_id"], "payload.root_frame_id")
+    if operation == "turn.submit_wait":
+        _exact_keys(
+            body,
+            {"project_id", "chat_id", "root_mode", "prompt", "authored_prompt_sha256"},
+            {"root_frame_id"},
+            "payload",
+        )
+        _identifier(body["project_id"], "payload.project_id")
+        _identifier(body["chat_id"], "payload.chat_id")
+        if body["root_mode"] not in {"new", "existing"}:
+            raise BrowserProtocolError("payload.root_mode is invalid")
+        _bounded_text(body["prompt"], _MAX_PROMPT_BYTES, "payload.prompt")
+        _sha256(body["authored_prompt_sha256"], "payload.authored_prompt_sha256")
+        has_root = "root_frame_id" in body
+        if body["root_mode"] == "new" and has_root:
+            raise BrowserProtocolError("A new-root submission cannot include root_frame_id")
+        if body["root_mode"] == "existing" and not has_root:
+            raise BrowserProtocolError("An existing-root submission requires root_frame_id")
+        if has_root:
+            _identifier(body["root_frame_id"], "payload.root_frame_id")
+    if operation == "turn.wait":
+        _exact_keys(body, {"project_id", "chat_id", "continuation"}, set(), "payload")
+        _identifier(body["project_id"], "payload.project_id")
+        _identifier(body["chat_id"], "payload.chat_id")
+        continuation = _mapping(body["continuation"], "payload.continuation")
+        _validate_turn_continuation(continuation, "payload.continuation")
+        if (
+            continuation["project_id"] != body["project_id"]
+            or continuation["chat_id"] != body["chat_id"]
+        ):
+            raise BrowserProtocolError("Continuation identity contradicts the wait request")
+    if operation == "approval.resolve":
+        _exact_keys(
+            body,
+            {
+                "project_id",
+                "chat_id",
+                "root_frame_id",
+                "card_id",
+                "decision",
+                "expected_fingerprint",
+            },
+            set(),
+            "payload",
+        )
+        for key in ("project_id", "chat_id", "root_frame_id", "card_id"):
+            _identifier(body[key], f"payload.{key}")
+        if body["decision"] not in {"allow_for_conversation", "deny"}:
+            raise BrowserProtocolError("payload.decision is invalid")
+        _sha256(body["expected_fingerprint"], "payload.expected_fingerprint")
     request = BrowserRequest(
         request_id=request_id,
         operation=operation,
@@ -185,7 +237,7 @@ def parse_response(text: str, request: BrowserRequest) -> BrowserResponse:
         if "result" not in response or "error" in response:
             raise BrowserProtocolError("Completed response must contain only result")
         result_value = dict(_mapping(response["result"], "response.result"))
-        _validate_operation_result(request.operation, result_value)
+        _validate_operation_result(request.operation, result_value, request.payload)
         result = MappingProxyType(result_value)
         return BrowserResponse(
             request_id=request.request_id,
@@ -207,7 +259,11 @@ def parse_response(text: str, request: BrowserRequest) -> BrowserResponse:
     )
 
 
-def _validate_operation_result(operation: str, result: Mapping[str, Any]) -> None:
+def _validate_operation_result(
+    operation: str,
+    result: Mapping[str, Any],
+    request_payload: Mapping[str, Any],
+) -> None:
     if operation == "session.detach":
         _exact_keys(result, {"detached"}, set(), "response.result")
         if not isinstance(result["detached"], bool):
@@ -221,6 +277,16 @@ def _validate_operation_result(operation: str, result: Mapping[str, Any]) -> Non
         return
     if operation == "agent_context.inspect":
         _validate_context_observation(result)
+        return
+    if operation in {"turn.submit_wait", "turn.wait"}:
+        _validate_turn_result(result)
+        _validate_turn_correlation(operation, result, request_payload)
+        return
+    if operation == "approval.resolve":
+        _validate_approval_resolved(result)
+        for key in ("project_id", "chat_id", "root_frame_id", "card_id", "decision"):
+            if result[key] != request_payload[key]:
+                raise BrowserProtocolError("Approval result does not correlate to its request")
         return
     if operation not in {"session.attach", "session.inspect"}:
         return
@@ -313,21 +379,7 @@ def _validate_chat_observation(result: Mapping[str, Any]) -> None:
     )
     if result["current_turn_state"] not in _TURN_STATES:
         raise BrowserProtocolError("response.result.current_turn_state is invalid")
-    cards = _bounded_list(
-        result["approval_cards"], _MAX_APPROVAL_CARDS, "response.result.approval_cards"
-    )
-    card_ids: set[str] = set()
-    for index, value in enumerate(cards):
-        path = f"response.result.approval_cards[{index}]"
-        card = _mapping(value, path)
-        _exact_keys(card, {"card_id", "fingerprint", "title", "kind"}, set(), path)
-        card_id = _identifier(card["card_id"], f"{path}.card_id")
-        if card_id in card_ids:
-            raise BrowserProtocolError("Approval card IDs must be unique")
-        card_ids.add(card_id)
-        _sha256(card["fingerprint"], f"{path}.fingerprint")
-        _bounded_text(card["title"], 512, f"{path}.title")
-        _identifier(card["kind"], f"{path}.kind")
+    cards = _validate_approval_cards(result["approval_cards"], "response.result.approval_cards")
     if (result["current_turn_state"] == "approval_required") != bool(cards):
         raise BrowserProtocolError("Approval state contradicts observed approval cards")
     if response_control_id is not None and not any(
@@ -359,6 +411,208 @@ def _validate_context_observation(result: Mapping[str, Any]) -> None:
     if list(skills) != sorted(skills):
         raise BrowserProtocolError("Enabled skills must be sorted")
     _sha256(result["context_hash"], "response.result.context_hash")
+
+
+def _validate_turn_result(result: Mapping[str, Any]) -> None:
+    _exact_keys(
+        result,
+        {
+            "project_id",
+            "chat_id",
+            "root_frame_id",
+            "turn_state",
+            "root_created",
+            "delivery",
+            "settled",
+            "approval",
+            "continuation",
+        },
+        set(),
+        "response.result",
+    )
+    _identifier(result["project_id"], "response.result.project_id")
+    _identifier(result["chat_id"], "response.result.chat_id")
+    _nullable_identifier(result["root_frame_id"], "response.result.root_frame_id")
+    if result["turn_state"] not in _TURN_STATES:
+        raise BrowserProtocolError("Turn result state is invalid")
+    _boolean(result["root_created"], "response.result.root_created")
+
+    delivery = result["delivery"]
+    if delivery is not None:
+        delivery = _mapping(delivery, "response.result.delivery")
+        _validate_delivery_proof(delivery, "response.result.delivery")
+        if delivery["root_frame_id"] != result["root_frame_id"]:
+            raise BrowserProtocolError("Delivery root contradicts the turn result")
+    settled = result["settled"]
+    if settled is not None:
+        _validate_settled_proof(
+            _mapping(settled, "response.result.settled"), "response.result.settled"
+        )
+    approval = result["approval"]
+    if approval is not None:
+        _validate_approval_observation(
+            _mapping(approval, "response.result.approval"), "response.result.approval"
+        )
+    continuation = result["continuation"]
+    if continuation is not None:
+        continuation = _mapping(continuation, "response.result.continuation")
+        _validate_turn_continuation(continuation, "response.result.continuation")
+
+    delivered = delivery is not None
+    is_settled = result["turn_state"] == "settled"
+    if is_settled != (settled is not None):
+        raise BrowserProtocolError("Settled state contradicts the settlement proof")
+    if (result["turn_state"] == "approval_required") != (approval is not None):
+        raise BrowserProtocolError("Approval state contradicts the approval observation")
+    if delivered and not is_settled and continuation is None:
+        raise BrowserProtocolError("A delivered unsettled turn requires a continuation")
+    if (not delivered or is_settled) and continuation is not None:
+        raise BrowserProtocolError("Continuation is only valid for delivered unsettled turns")
+    if delivered and result["root_frame_id"] is None:
+        raise BrowserProtocolError("A delivered turn requires a root identity")
+    if continuation is not None:
+        assert delivery is not None
+        if (
+            continuation["project_id"] != result["project_id"]
+            or continuation["chat_id"] != result["chat_id"]
+            or continuation["root_frame_id"] != result["root_frame_id"]
+            or continuation["authored_prompt_sha256"] != delivery["authored_prompt_sha256"]
+            or continuation["delivery_text_sha256"] != delivery["delivery_text_sha256"]
+            or continuation["normalized_user_turn_id"] != delivery["normalized_user_turn_id"]
+        ):
+            raise BrowserProtocolError("Continuation contradicts the delivery proof")
+
+
+def _validate_delivery_proof(value: Mapping[str, Any], path: str) -> None:
+    _exact_keys(
+        value,
+        {
+            "root_frame_id",
+            "authored_prompt_sha256",
+            "delivery_text_sha256",
+            "normalized_user_turn_id",
+        },
+        set(),
+        path,
+    )
+    _identifier(value["root_frame_id"], f"{path}.root_frame_id")
+    _sha256(value["authored_prompt_sha256"], f"{path}.authored_prompt_sha256")
+    _sha256(value["delivery_text_sha256"], f"{path}.delivery_text_sha256")
+    _identifier(value["normalized_user_turn_id"], f"{path}.normalized_user_turn_id")
+
+
+def _validate_settled_proof(value: Mapping[str, Any], path: str) -> None:
+    _exact_keys(
+        value,
+        {"stop_hidden", "stable_samples", "new_response_control_id"},
+        set(),
+        path,
+    )
+    if value["stop_hidden"] is not True:
+        raise BrowserProtocolError(f"{path}.stop_hidden must be true")
+    _bounded_integer(value["stable_samples"], 2, 100, f"{path}.stable_samples")
+    _identifier(value["new_response_control_id"], f"{path}.new_response_control_id")
+
+
+def _validate_turn_continuation(value: Mapping[str, Any], path: str) -> None:
+    _exact_keys(
+        value,
+        {
+            "project_id",
+            "chat_id",
+            "root_frame_id",
+            "authored_prompt_sha256",
+            "delivery_text_sha256",
+            "normalized_user_turn_id",
+            "baseline_response_control_id",
+        },
+        set(),
+        path,
+    )
+    _identifier(value["project_id"], f"{path}.project_id")
+    _identifier(value["chat_id"], f"{path}.chat_id")
+    _identifier(value["root_frame_id"], f"{path}.root_frame_id")
+    _sha256(value["authored_prompt_sha256"], f"{path}.authored_prompt_sha256")
+    _sha256(value["delivery_text_sha256"], f"{path}.delivery_text_sha256")
+    _identifier(value["normalized_user_turn_id"], f"{path}.normalized_user_turn_id")
+    _nullable_identifier(
+        value["baseline_response_control_id"], f"{path}.baseline_response_control_id"
+    )
+
+
+def _validate_approval_observation(value: Mapping[str, Any], path: str) -> None:
+    _exact_keys(value, {"cards"}, set(), path)
+    cards = _validate_approval_cards(value["cards"], f"{path}.cards")
+    if len(cards) != 1:
+        raise BrowserProtocolError("Approval observation must contain one unique card")
+
+
+def _validate_approval_cards(value: object, path: str) -> list[Any]:
+    cards = _bounded_list(value, _MAX_APPROVAL_CARDS, path)
+    card_ids: set[str] = set()
+    for index, card_value in enumerate(cards):
+        card_path = f"{path}[{index}]"
+        card = _mapping(card_value, card_path)
+        _exact_keys(card, {"card_id", "fingerprint", "title", "kind"}, set(), card_path)
+        card_id = _identifier(card["card_id"], f"{card_path}.card_id")
+        if card_id in card_ids:
+            raise BrowserProtocolError("Approval card IDs must be unique")
+        card_ids.add(card_id)
+        _sha256(card["fingerprint"], f"{card_path}.fingerprint")
+        _bounded_text(card["title"], 512, f"{card_path}.title")
+        _identifier(card["kind"], f"{card_path}.kind")
+    return cards
+
+
+def _validate_approval_resolved(result: Mapping[str, Any]) -> None:
+    _exact_keys(
+        result,
+        {
+            "project_id",
+            "chat_id",
+            "root_frame_id",
+            "card_id",
+            "decision",
+            "verified_cleared",
+        },
+        set(),
+        "response.result",
+    )
+    for key in ("project_id", "chat_id", "root_frame_id", "card_id"):
+        _identifier(result[key], f"response.result.{key}")
+    if result["decision"] not in {"allow_for_conversation", "deny"}:
+        raise BrowserProtocolError("Approval decision is invalid")
+    if result["verified_cleared"] is not True:
+        raise BrowserProtocolError("Resolved approval must be verified cleared")
+
+
+def _validate_turn_correlation(
+    operation: str,
+    result: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> None:
+    if result["project_id"] != payload["project_id"] or result["chat_id"] != payload["chat_id"]:
+        raise BrowserProtocolError("Turn result does not correlate to its request")
+    delivery = result["delivery"]
+    if delivery is None:
+        raise BrowserProtocolError("Turn proof does not correlate to its request")
+    if operation == "turn.submit_wait":
+        if delivery["authored_prompt_sha256"] != payload["authored_prompt_sha256"]:
+            raise BrowserProtocolError("Turn proof does not correlate to its request")
+        if (
+            payload["root_mode"] == "existing"
+            and result["root_frame_id"] != payload["root_frame_id"]
+        ):
+            raise BrowserProtocolError("Turn proof does not correlate to its request")
+        return
+    continuation = payload["continuation"]
+    if (
+        result["root_frame_id"] != continuation["root_frame_id"]
+        or delivery["authored_prompt_sha256"] != continuation["authored_prompt_sha256"]
+        or delivery["delivery_text_sha256"] != continuation["delivery_text_sha256"]
+        or delivery["normalized_user_turn_id"] != continuation["normalized_user_turn_id"]
+    ):
+        raise BrowserProtocolError("Turn proof does not correlate to its request")
 
 
 def _parse_error(value: object, outcome: str) -> BrowserError:

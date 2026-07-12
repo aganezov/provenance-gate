@@ -305,7 +305,8 @@ function pageObservationHelpers() {
   };
 }
 
-const HELPERS = pageObservationHelpers.toString();
+export const PAGE_OBSERVATION_HELPERS_SOURCE = pageObservationHelpers.toString();
+const HELPERS = PAGE_OBSERVATION_HELPERS_SOURCE;
 const CLASSIFY_TURN_STATE = classifyObservedTurnState.toString();
 
 export function buildProjectInspectSource(projectId) {

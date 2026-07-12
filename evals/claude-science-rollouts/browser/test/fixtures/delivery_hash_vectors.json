@@ -1,0 +1,16 @@
+{
+  "normalization": "unicode-nfc-collapse-whitespace-trim-v1",
+  "vectors": [
+    {"id": "save-inputs", "authored_prompt_sha256": "6228a562387961adeec6c3b96845c7daf1fb2b33ba843daab9aac09e21a4d8e2", "delivery_text_sha256": "5ab8c172af52ed0abb88aeeb36880b3914123e637751bd83d77f86ab3a0ff58c"},
+    {"id": "filter-cells", "authored_prompt_sha256": "35cf52bcb4606dffc7f9479bdcc9006650aac51a21224dd229d54f5c94186fc9", "delivery_text_sha256": "35cf52bcb4606dffc7f9479bdcc9006650aac51a21224dd229d54f5c94186fc9"},
+    {"id": "analysis-results", "authored_prompt_sha256": "d4ddd55f1bd7a235ff85518ccad91ea928e75657d47545109072af9db7dd5af1", "delivery_text_sha256": "3bece70b7b2b99dedf70aa35df02cb2111c12a1642b7049121016c2d53039b26"},
+    {"id": "panel-inputs", "authored_prompt_sha256": "a05739e0a4ba839f02c790a116a14ffdc0f6157def52761b085e4247fa97d6fc", "delivery_text_sha256": "a05739e0a4ba839f02c790a116a14ffdc0f6157def52761b085e4247fa97d6fc"},
+    {"id": "style-and-manifest", "authored_prompt_sha256": "f3a42d945e8fcf7b22dda44b4fb39ff69b3192a9a5cb38e7334797e24023b629", "delivery_text_sha256": "e5326a959e98bed9e75e1b3a4ebb82bc91af5cb413acde3ef42663c768ba8e26"},
+    {"id": "style-only", "authored_prompt_sha256": "287affb22f972ce8d771c749e921e3346659b2cf5a9e5d6e9f5b224882f6ea77", "delivery_text_sha256": "287affb22f972ce8d771c749e921e3346659b2cf5a9e5d6e9f5b224882f6ea77"},
+    {"id": "strict-qc-params", "authored_prompt_sha256": "b19e7bb2849dd952f79b7dda5e4a8c0be3e03769b579a15dffdcb17e7000b354", "delivery_text_sha256": "b19e7bb2849dd952f79b7dda5e4a8c0be3e03769b579a15dffdcb17e7000b354"},
+    {"id": "strict-qc", "authored_prompt_sha256": "f515304f22e1dd2c15060e45eff291e599918ef89aceb7dd866fe194d560668b", "delivery_text_sha256": "f515304f22e1dd2c15060e45eff291e599918ef89aceb7dd866fe194d560668b"},
+    {"id": "strict-ifn-branch", "authored_prompt_sha256": "98bbb58f91df08d1bbc64c1e2daf7150c39ac59e5bf59aecb8b19c33e1fda0f8", "delivery_text_sha256": "98bbb58f91df08d1bbc64c1e2daf7150c39ac59e5bf59aecb8b19c33e1fda0f8"},
+    {"id": "assemble-final-bare", "authored_prompt_sha256": "dbaf73695b4c031291ca0161e4cb54e7f124ab8607cc47d2f8b3dbd514238c3a", "delivery_text_sha256": "dbaf73695b4c031291ca0161e4cb54e7f124ab8607cc47d2f8b3dbd514238c3a"},
+    {"id": "decline-sibling-regen", "authored_prompt_sha256": "cef3e5378edd283a3ba8c982436df2b72886c952affed2444cda0b52b9240b10", "delivery_text_sha256": "cef3e5378edd283a3ba8c982436df2b72886c952affed2444cda0b52b9240b10"}
+  ]
+}
