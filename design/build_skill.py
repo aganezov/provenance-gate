@@ -41,7 +41,7 @@ GENERATED = ("cockpit_template.html", "cockpit-app.js")
 
 # core modules inlined in dependency order; the reader last (it uses derive + model)
 MODULES = ["core/model.py", "core/walk.py", "core/derive.py", "core/audit.py",
-           "core/review_kit.py", "adapters/cs_skill/host_query_reader.py"]
+           "core/subgraph.py", "core/review_kit.py", "adapters/cs_skill/host_query_reader.py"]
 
 
 # ---- the in-CS cockpit template, generated from ui/cockpit.html at build time ----
@@ -168,7 +168,7 @@ def _kernel_source() -> str:
         + textwrap.indent(nested, "    ")
         + '\n    return {"audit_project": audit_project, "audit_input_lineage": audit_input_lineage,'
         + '\n            "render_cockpit": render_cockpit, "review_subgraph": review_subgraph,'
-        + '\n            "review_chat": review_chat}\n'
+        + '\n            "review_chat": review_chat, "review_selection": review_selection}\n'
         + WRAPPERS
     ).replace(", slots=True", "").replace("__SKILL_NAME__", SKILL_NAME)
 
@@ -393,6 +393,59 @@ def review_chat(scope="upstream"):
     kit = review_kit(reader.read_graph(proj["id"], seeds=seeds), scope)
     kit["chat_scoped"] = True
     return kit
+
+
+def _trusted_inputs(graph, keep):
+    # the DIRECT dependencies crossing INTO the selection from EXCLUDED producers — the human's trust
+    # cut. Not drawn in the induced brief, but the agent should know what the selection rests on. Deduped
+    # by via-version (one row per distinct external version — two picked nodes sharing an input collapse
+    # to one), so a version_mix's TWO live versions still both appear. Reuses review_kit's _via_fields.
+    ref_of = _ref_map(graph)
+    label = {n.id: n.label for n in graph.nodes}
+    seen, out = set(), []
+    for e in graph.edges:
+        v = e.via_artifact_version_id
+        if e.dst_node_id in keep and e.src_node_id not in keep and v not in seen:
+            seen.add(v)
+            row = _via_fields(ref_of.get(v), v)
+            row["from"] = label.get(e.src_node_id, e.src_node_id)
+            out.append(row)
+    out.sort(key=lambda r: (r["from"], r["artifact"], r["version"] or 0))
+    return out
+
+
+def review_selection(nodes, scope="selection"):
+    """A deterministic review brief over EXACTLY the picked nodes — a hand-selected region from the
+    cockpit. The STRUCTURE is INDUCED down to just those nodes and the edges among them (no full
+    lineage cone dumped on the agent), but the VERDICTS are taken from the FULL-project audit, so the
+    flags on the shown nodes match exactly what the cockpit colours them. That lets you hand the agent
+    a suspicious fork, cut the trusted trunk out of the picture, and still have every stale_input /
+    version_mix reflect the whole graph — a conflict can rest on inputs that aren't drawn here, so
+    ``trusted_inputs`` lists what the selection consumes from outside itself. Resolve ``nodes``
+    (version ids, or filenames / artifact ids) to the selection. Backed by core.induced_subgraph +
+    core.review_kit."""
+    proj = _current_project()
+    reader = _reader()
+    selected = reader.resolve_seeds(proj["id"], nodes)   # -> version ids (self-artifacts dropped)
+    if not selected:
+        return {"project": proj["id"], "status": "seeds_unresolved", "nodes": nodes,
+                "next": "none matched an artifact/version in this project; check the names/ids"}
+    full = reader.read_project_graph(proj["id"])   # the AUTHORITATIVE graph — same basis as the cockpit
+    producer_of = _producer_map(full)              # version id -> its producing node (shared with audit)
+    keep = {producer_of[v] for v in selected if v in producer_of}
+    if not keep:   # versions resolved but none has a producing node in the graph — an inconsistent
+        return {"project": proj["id"], "status": "seeds_no_producers", "nodes": nodes,   # DB, not an
+                "next": "the selected versions have no producing cell in this project (unexpected — the graph may be inconsistent)"}
+    kit = review_kit(induced_subgraph(full, keep), scope, verdicts=audit_graph(full))
+    kit["basis"] = "full_project_audit"
+    kit["trusted_inputs"] = _trusted_inputs(full, keep)
+    kit["note"] = ("induced subgraph — only the selected nodes and the edges among them are shown, "
+                   "NOT a full lineage cone. The flags come from the FULL-project audit, so a flag can "
+                   "name an artifact that isn't drawn here — each flag's mixed/stale field names the "
+                   "exact artifact + versions behind it. 'boundary' lists only sources INSIDE the "
+                   "selection (empty when you cut the trunk); 'trusted_inputs' is the real upstream "
+                   "boundary — the direct dependencies the selection consumes from the excluded region.")
+    return kit
 '''
 
 
@@ -419,6 +472,10 @@ def review_chat(scope="upstream"):
     return pg_impl(host)["review_chat"](scope)
 
 
+def review_selection(nodes, scope="selection"):
+    return pg_impl(host)["review_selection"](nodes, scope)
+
+
 def pg_dev_sync():
     """DEV ONLY: resync this skill's files from ~/pg-share (build_skill --share) via host.skills.edit,
     then start a fresh conversation to load them. Strip before distributing."""
@@ -438,7 +495,7 @@ def pg_dev_sync():
 
 SKILL_MD = '''---
 name: __SKILL_NAME__
-description: Deterministic trust audit over the current Claude Science project's provenance DAG. Call audit_project() for a per-cell verdict (which computations consume a stale input or merge two live versions of one artifact), audit_input_lineage(files) before writing an output to check its inputs' lineage, review_chat() for an evidence brief scoped to what THIS conversation produced, or review_subgraph(nodes) for a brief over a hand-picked lineage subgraph to ground a review. Use when reasoning about whether a result is built on current, consistent upstream data.
+description: Deterministic trust audit over the current Claude Science project's provenance DAG. Call audit_project() for a per-cell verdict (which computations consume a stale input or merge two live versions of one artifact), audit_input_lineage(files) before writing an output to check its inputs' lineage, review_chat() for an evidence brief scoped to what THIS conversation produced, review_subgraph(nodes) for a brief over a hand-picked lineage subgraph, or review_selection(nodes) for a brief over exactly the picked nodes (a fork, minus a trusted trunk) to ground a review. Use when reasoning about whether a result is built on current, consistent upstream data.
 ---
 
 # __SKILL_NAME__
@@ -473,6 +530,14 @@ Deterministic, claim-level provenance audit for the current project. Two helpers
   checksum · is-latest), the raw-input boundary, and the cell ids to fetch producing code for. It
   fixes WHAT to look at — you do the reasoning and may walk deeper with your own tools. Use it when
   you want to scope by hand instead of by conversation.
+- **`review_selection(nodes, scope="selection")`** — a brief over **EXACTLY** the picked nodes — for
+  the cockpit "review this fork, not the trunk I trust" hand-off. Pass the node refs (version ids from
+  the cockpit, or filenames / artifact ids). The **structure** is induced down to just the selection
+  and the edges among them (not a full lineage cone), but the **verdicts** come from the FULL-project
+  audit — so the flags match exactly what the cockpit colours those nodes, even for a `version_mix`
+  that rests on inputs outside the selection. Adds `trusted_inputs` (what the selection consumes from
+  the excluded region) and `basis: full_project_audit`. Use `review_subgraph` instead when you *want*
+  the whole upstream cone in the brief.
 
 All are computed from provenance alone (nothing stored) and are deterministic. A linear revision chain
 (reading v1 to write v2) is a supersession, not a conflict, and is not flagged.
