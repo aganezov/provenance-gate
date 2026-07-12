@@ -259,12 +259,16 @@ def audit_project():
 
 
 def audit_input_lineage(input_files, planned_output=None):
-    """Pre-write check: given input filenames, the verdict over their latest versions' lineage
-    (stale source / version mix) before you write ``planned_output``. Backed by core.audit —
-    converges with the merge-lineage-audit helper on the tested engine."""
+    """Pre-write check before you write ``planned_output`` from these input files. Flags two things the
+    filenames alone don't reveal: (1) MERGING these inputs would collide on divergent versions of one
+    artifact (a version_mix in their combined lineage), and (2) the inputs already REST on flagged data —
+    a stale or mixed cell in their FOUNDATION (ancestry), e.g. an input that is the current version of its
+    artifact but was itself built from a since-superseded source. Backed by core.audit."""
     if isinstance(input_files, str):
         input_files = [input_files]
-    g = _reader().read_project_graph(_current_project_id())
+    reader = _reader()
+    pid = _current_project_id()
+    g = reader.read_project_graph(pid)
     latest = {a.filename: a.artifact_version_id for n in g.nodes for a in n.output_surface if a.is_latest}
     vids, missing = [], []
     for f in input_files:
@@ -275,9 +279,14 @@ def audit_input_lineage(input_files, planned_output=None):
     if not vids:
         return {"planned_output": planned_output, "missing_inputs": missing,
                 "verdict": "LINEAGE_MISSING" if missing else "NOT_APPLICABLE"}
-    v = audit_inputs(g, vids)
-    return {"planned_output": planned_output, "missing_inputs": missing, "verdict": v.level,
-            "stale": issues(v.stale), "mixed": issues(v.mixed)}
+    combo = audit_inputs(g, vids)                             # mix from MERGING the inputs (hypothetical node)
+    cone = reader.read_graph(pid, seeds=vids)                 # the inputs' own FOUNDATION (their ancestry)
+    foundation = flagged_verdicts(audit_graph(cone), {n.id: n.label for n in cone.nodes})
+    mix = combo.level == VERSION_MIX or any(f["verdict"] == VERSION_MIX for f in foundation)
+    stale = bool(combo.stale) or any(f["verdict"] == STALE_INPUT for f in foundation)
+    return {"planned_output": planned_output, "missing_inputs": missing,
+            "verdict": VERSION_MIX if mix else STALE_INPUT if stale else CLEAN,
+            "mixed": issues(combo.mixed), "stale": issues(combo.stale), "foundation": foundation}
 
 
 def _resolve_cone(reader, proj, refs):
@@ -507,9 +516,11 @@ Deterministic, claim-level provenance audit for the current project. Two helpers
   non-current version of some artifact) or `version_mix` (its input lineage reconverges on two live
   versions of one artifact — a divergent-branch merge). Returns the flagged cells with the artifacts
   and version numbers in play.
-- **`audit_input_lineage(input_files, planned_output=None)`** — before writing an output, check the
-  latest versions of the named input files: same `stale_input` / `version_mix` verdict over their
-  lineage closure.
+- **`audit_input_lineage(input_files, planned_output=None)`** — before writing an output from the named
+  input files, check what their filenames don't reveal: `version_mix` if MERGING them collides on
+  divergent versions of one artifact, and `stale_input` / `version_mix` in their FOUNDATION — a flagged
+  cell in the inputs' own ancestry (e.g. an input that is the current version of its artifact but was
+  itself built from a since-superseded source). The flagged foundation cells come back in `foundation`.
 - **`render_cockpit(focus=None)`** — write an interactive `cockpit.html` (project DAG, each cell
   coloured by its verdict: clean / stale input / version mix), referencing the cytoscape bundle by its
   artifact marker so it stays KB. The first call returns the static assets to `save_artifacts` once;
