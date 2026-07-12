@@ -242,19 +242,23 @@ def test_nonzero_process_is_not_replayed(tmp_path: Path) -> None:
 def test_timeout_is_not_replayed(tmp_path: Path) -> None:
     marker = tmp_path / "calls"
     script = tmp_path / "wait.py"
+    # The subprocess records one invocation, then sleeps far past the deadline. The deadline is
+    # deliberately generous so the marker is always written before the timeout kills the process:
+    # a tight deadline races Python interpreter startup and flakes on loaded CI runners. The long
+    # sleep guarantees the timeout still fires.
     script.write_text(
         "from pathlib import Path\n"
         "from time import sleep\n"
         f"p = Path({str(marker)!r})\n"
         "p.write_text(p.read_text() + 'x' if p.exists() else 'x')\n"
-        "sleep(2)\n"
+        "sleep(30)\n"
     )
     short_request = make_request(
         "session.inspect",
         request_id="request-001",
         session_id="session-001",
         origin="http://127.0.0.1:8875",
-        deadline_ms=25,
+        deadline_ms=2000,
     )
     with pytest.raises(BrowserTimeoutError):
         BrowserBridge((sys.executable, str(script)), timeout_headroom_ms=0).invoke(short_request)
