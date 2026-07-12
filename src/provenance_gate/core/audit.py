@@ -121,7 +121,9 @@ def _merge_consumed(input_surface, vcones: dict) -> dict:
     return ic
 
 
-def _cones(graph: Graph, deps: dict[str, set[str]]):
+def _cones(
+    graph: Graph, deps: dict[str, set[str]]
+) -> tuple[dict[str, dict[str, set[str]]], dict[str, dict[str, set[str]]]]:
     """One topological pass. Returns (vcones, in_cones):
       vcones[version_id] = {artifact_id: {live version ids}} in its consumed lineage: the version
         itself plus what its producing cell consumed. A cell's co-*output* siblings are excluded —
@@ -141,6 +143,9 @@ def _cones(graph: Graph, deps: dict[str, set[str]]):
         base = _merge_consumed(nodes[nid].input_surface, vcones)
         in_cones[nid] = base
         for a in nodes[nid].output_surface:
+            # copy base per output: each output must diverge at its OWN artifact (below) without
+            # touching its siblings' cones. Stored cones are then read-only (_merge_consumed builds
+            # fresh sets), so the copy isolates outputs rather than guarding later mutation.
             vc = {aid: set(vers) for aid, vers in base.items()}
             vc[a.artifact_id] = {a.artifact_version_id}   # subsumes prior of its own artifact
             vcones[a.artifact_version_id] = vc
@@ -159,18 +164,20 @@ def _verdict(node: Node, in_cone: dict[str, set[str]], ref_of: dict[str, Artifac
         key=lambda s: s.artifact,
     ))
     # VERSION_MIX: an artifact reaching the node at >1 live version in its lineage. Two distinct
-    # version ids of one artifact ARE the mix (linear revisions collapsed by subsumption), so
-    # we do not gate on version_number: a pair carrying NULL numbers is still flagged.
+    # version ids of one artifact ARE the mix (linear revisions collapsed by subsumption), so we do
+    # not gate on version_number: a pair carrying NULL numbers is still flagged (with nums == ()).
     mixed = []
     for aid, vids in in_cone.items():
         if len(vids) < 2:
             continue
+        # A detected mix is ALWAYS flagged, never dropped to a silent CLEAN. Every id resolves for
+        # valid data (all sit on a surface indexed in _ref_map); the lead/None fallbacks only
+        # apply to a corrupt / partial graph, where we still flag it, just with degraded naming.
         refs = sorted((ref_of[v] for v in vids if v in ref_of), key=lambda r: r.artifact_version_id)
-        if len(refs) < 2:  # need >=2 resolvable versions to name the mix
-            continue
-        lead = refs[0]  # deterministic pick (min version id), not set-iteration order
+        lead = refs[0] if refs else None  # deterministic pick (min version id), not set order
         nums = tuple(sorted({r.version_number for r in refs if r.version_number is not None}))
-        mixed.append(VersionIssue(lead.filename, aid, nums, lead.latest_version_number))
+        mixed.append(VersionIssue(lead.filename if lead else aid, aid, nums,
+                                  lead.latest_version_number if lead else None))
     mixed = tuple(sorted(mixed, key=lambda m: m.artifact))
     level = VERSION_MIX if mixed else STALE_INPUT if stale else CLEAN
     return Verdict(level=level, stale=stale, mixed=mixed)

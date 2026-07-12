@@ -174,6 +174,7 @@ def test_null_version_numbers_still_flag_a_mix():
     v = audit.audit_graph(Graph(cs_project_id="p", nodes=(
         node("sA", outputs=[qa], kind="source"), node("sB", outputs=[qb], kind="source"), rep)))
     assert v["rep"].level == audit.VERSION_MIX and v["rep"].mixed[0].artifact == "q.csv"
+    assert v["rep"].mixed[0].versions == ()   # all NULL numbers -> empty versions, still flagged
 
 
 def test_revised_input_and_co_output_from_old_version_flags_downstream_mix():
