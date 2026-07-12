@@ -151,21 +151,37 @@ def test_inlined_kernel_review_selection(cs_conn):
         assert key in kit
 
 
-def test_review_selection_verdict_comes_from_full_graph(cs_conn):
-    # the spec: flags match the COCKPIT (full-project audit), not an audit of the induced graph.
-    # Give stats.csv a newer head v2 -> in the full audit, note.txt's cell reads a STALE stats.csv.
-    # The brief induces down to just that cell (stats.csv not drawn), but the stale_input flag rides
-    # in from the full-project audit — the "match the cockpit" guarantee.
-    cs_conn.execute("UPDATE artifacts SET latest_version_id='v_stats2' WHERE id='a_stats'")
-    cs_conn.execute("INSERT INTO execution_log VALUES('c_rev','fd041418',9,'revise stats')")
-    cs_conn.execute("INSERT INTO artifact_versions VALUES"
-                    "('v_stats2','a_stats',2,'x','p','v_stats','c_rev','fd041418')")
-    cs_conn.execute("INSERT INTO artifact_dependencies VALUES('v_stats2','v_stats','stats.csv')")
+def test_review_selection_mix_verdict_from_full_graph(cs_conn):
+    # a TRANSITIVE fork mix: raw.csv @v1/v2 -> c_a (int_a from v1), c_b (int_b from v2); c_m merges
+    # int_a+int_b. Select ONLY merged.csv: the induced brief is 1 node whose own inputs are both
+    # latest (auditing it ALONE -> clean), but the FULL-project audit flags version_mix on raw.csv.
+    # The flag names raw.csv (mixed field); raw is NOT a direct input, so it is absent from
+    # trusted_inputs (direct-only) while int_a/int_b are. Pins verdicts-from-full AND the note.
+    cs_conn.executemany("INSERT INTO artifacts VALUES(?,?,?,?)", [
+        ("a_raw", "proj_smoke", "raw.csv", "v_raw2"),
+        ("a_ia", "proj_smoke", "int_a.csv", "v_ia"),
+        ("a_ib", "proj_smoke", "int_b.csv", "v_ib"),
+        ("a_m", "proj_smoke", "merged.csv", "v_m")])
+    cs_conn.executemany("INSERT INTO execution_log VALUES(?,?,?,?)", [
+        ("c_a", "fd041418", 5, "int_a"), ("c_b", "fd041418", 6, "int_b"),
+        ("c_m", "fd041418", 7, "merge")])
+    cs_conn.executemany("INSERT INTO artifact_versions VALUES(?,?,?,?,?,?,?,?)", [
+        ("v_raw1", "a_raw", 1, "c", "p", None, None, None),   # source raw v1
+        ("v_raw2", "a_raw", 2, "c", "p", None, None, None),   # source raw v2 (head)
+        ("v_ia", "a_ia", 1, "c", "p", None, "c_a", "fd041418"),
+        ("v_ib", "a_ib", 1, "c", "p", None, "c_b", "fd041418"),
+        ("v_m", "a_m", 1, "c", "p", None, "c_m", "fd041418")])
+    cs_conn.executemany("INSERT INTO artifact_dependencies VALUES(?,?,?)", [
+        ("v_ia", "v_raw1", "raw.csv"), ("v_ib", "v_raw2", "raw.csv"),
+        ("v_m", "v_ia", "int_a.csv"), ("v_m", "v_ib", "int_b.csv")])
     cs_conn.commit()
-    kit = _exec_kernel(_FakeHost(cs_conn))["review_selection"]("note.txt")
+    kit = _exec_kernel(_FakeHost(cs_conn))["review_selection"]("merged.csv")
     assert kit["nodes"] == 1 and kit["basis"] == "full_project_audit"
-    assert any(f["verdict"] == "stale_input" for f in kit["flags"])       # from the full audit
-    assert "stats.csv" in {t["artifact"] for t in kit["trusted_inputs"]}  # not drawn, flagged-via
+    mix = [f for f in kit["flags"] if f["verdict"] == "version_mix"]
+    assert mix and any(m["artifact"] == "raw.csv" for m in mix[0]["mixed"])   # from the FULL audit
+    ti = {t["artifact"] for t in kit["trusted_inputs"]}
+    assert "raw.csv" not in ti                    # transitive root -> not a direct input, not shown
+    assert {"int_a.csv", "int_b.csv"} <= ti       # the direct deps ARE the trusted boundary
 
 
 def test_inlined_kernel_review_selection_unresolved(cs_conn):

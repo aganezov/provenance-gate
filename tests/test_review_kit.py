@@ -183,10 +183,13 @@ def test_verdicts_override_carries_wider_audit_into_a_subgraph():
 
 
 def test_verdicts_override_restricts_flags_to_shown_nodes():
-    # verdicts for nodes NOT in the induced graph must not leak in — only the shown node's flag
+    # induce to a CLEAN node (c1) while c3 (flagged version_mix) is EXCLUDED but in the verdicts.
+    # Without the `n in label` restriction c3's flag would LEAK in (flagged_verdicts falls back to
+    # label.get(nid, nid) as the cell); the restriction keeps the shown brief flag-free. This fails
+    # if the restriction is dropped — the old c3-induced version was tautological (c1/c2 are clean).
     g = derive.derive_graph("proj_x", *_mix_records(), built_at=1.0)
-    kit = review_kit(induced_subgraph(g, {"c3"}), "selection", verdicts=audit.audit_graph(g))
-    assert {f["cell"] for f in kit["flags"]} == {"cell 3"}   # not c1/c2, though they're in verdicts
+    kit = review_kit(induced_subgraph(g, {"c1"}), "selection", verdicts=audit.audit_graph(g))
+    assert kit["nodes"] == 1 and kit["flags"] == []   # c3's mix must NOT leak into the c1 brief
 
 
 def test_verdicts_none_audits_the_given_graph_as_before():

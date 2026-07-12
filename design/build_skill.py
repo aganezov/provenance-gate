@@ -395,21 +395,22 @@ def review_chat(scope="upstream"):
     return kit
 
 
-def _trusted_inputs(cone, keep):
-    # dependencies crossing INTO the selection from EXCLUDED producers — the human's trust cut. Not
-    # shown in the induced brief, but the agent should know what the selection rests on upstream.
-    ref_of = _ref_map(cone)
-    label = {n.id: n.label for n in cone.nodes}
-    out = []
-    for e in cone.edges:
-        if e.dst_node_id in keep and e.src_node_id not in keep:
-            a = ref_of.get(e.via_artifact_version_id)
-            out.append({"artifact": _name(a) if a else e.via_artifact_version_id,
-                        "version": a.version_number if a else None,
-                        "checksum": _short(a.checksum) if a else "",
-                        "from": label.get(e.src_node_id, e.src_node_id),
-                        "into": label.get(e.dst_node_id, e.dst_node_id)})
-    out.sort(key=lambda r: (r["into"], r["artifact"], r["version"] or 0))
+def _trusted_inputs(graph, keep):
+    # the DIRECT dependencies crossing INTO the selection from EXCLUDED producers — the human's trust
+    # cut. Not drawn in the induced brief, but the agent should know what the selection rests on. Deduped
+    # by via-version (one row per distinct external version — two picked nodes sharing an input collapse
+    # to one), so a version_mix's TWO live versions still both appear. Reuses review_kit's _via_fields.
+    ref_of = _ref_map(graph)
+    label = {n.id: n.label for n in graph.nodes}
+    seen, out = set(), []
+    for e in graph.edges:
+        v = e.via_artifact_version_id
+        if e.dst_node_id in keep and e.src_node_id not in keep and v not in seen:
+            seen.add(v)
+            row = _via_fields(ref_of.get(v), v)
+            row["from"] = label.get(e.src_node_id, e.src_node_id)
+            out.append(row)
+    out.sort(key=lambda r: (r["from"], r["artifact"], r["version"] or 0))
     return out
 
 
@@ -430,14 +431,17 @@ def review_selection(nodes, scope="selection"):
         return {"project": proj["id"], "status": "seeds_unresolved", "nodes": nodes,
                 "next": "none matched an artifact/version in this project; check the names/ids"}
     full = reader.read_project_graph(proj["id"])   # the AUTHORITATIVE graph — same basis as the cockpit
-    keep = {n.id for n in full.nodes
-            if any(a.artifact_version_id in selected for a in n.output_surface)}
+    producer_of = _producer_map(full)              # version id -> its producing node (shared with audit)
+    keep = {producer_of[v] for v in selected if v in producer_of}
     kit = review_kit(induced_subgraph(full, keep), scope, verdicts=audit_graph(full))
     kit["basis"] = "full_project_audit"
     kit["trusted_inputs"] = _trusted_inputs(full, keep)
     kit["note"] = ("induced subgraph — only the selected nodes and the edges among them are shown, "
-                   "NOT a full lineage cone; the flags and inventory reflect the FULL-project audit "
-                   "(a stale_input / version_mix can rest on inputs not drawn here — see trusted_inputs).")
+                   "NOT a full lineage cone. The flags come from the FULL-project audit, so a flag can "
+                   "name an artifact that isn't drawn here — each flag's mixed/stale field names the "
+                   "exact artifact + versions behind it. 'boundary' lists only sources INSIDE the "
+                   "selection (empty when you cut the trunk); 'trusted_inputs' is the real upstream "
+                   "boundary — the direct dependencies the selection consumes from the excluded region.")
     return kit
 '''
 

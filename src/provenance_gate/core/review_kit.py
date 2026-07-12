@@ -39,6 +39,15 @@ def _name(ref) -> str:
     return ref.filename or ("(unnamed " + ref.artifact_version_id[:8] + ")")
 
 
+def _via_fields(ref, via_id: str) -> dict:
+    """The ``artifact``/``version``/``checksum`` of an edge's via-version — the one shape shared by
+    the lineage rows here and (inlined) by the skill's ``trusted_inputs``. ``ref`` is the resolved
+    ArtifactRef or None; ``via_id`` is the raw version id, the label when it doesn't resolve."""
+    return {"artifact": _name(ref) if ref else via_id,
+            "version": ref.version_number if ref else None,
+            "checksum": _short(ref.checksum) if ref else ""}
+
+
 def review_kit(graph: Graph, scope: str = "upstream", verdicts: Optional[dict] = None) -> dict:
     """A deterministic review brief over ``graph`` (a lineage subgraph). Returns a JSON-safe dict;
     identical ``(graph, scope)`` produces an identical kit. Reuses ``core.audit`` for the flags.
@@ -65,15 +74,11 @@ def review_kit(graph: Graph, scope: str = "upstream", verdicts: Optional[dict] =
 
     lineage = []
     for e in graph.edges:
-        a = ref_of.get(e.via_artifact_version_id)
-        lineage.append({
-            "from": label.get(e.src_node_id, e.src_node_id),
-            "to": label.get(e.dst_node_id, e.dst_node_id),
-            "artifact": _name(a) if a else e.via_artifact_version_id,
-            "version": a.version_number if a else None,
-            "checksum": _short(a.checksum) if a else "",
-            "ref": e.reference_name,
-        })
+        row = {"from": label.get(e.src_node_id, e.src_node_id),
+               "to": label.get(e.dst_node_id, e.dst_node_id)}
+        row.update(_via_fields(ref_of.get(e.via_artifact_version_id), e.via_artifact_version_id))
+        row["ref"] = e.reference_name
+        lineage.append(row)
     lineage.sort(key=lambda r: (r["to"], r["from"], r["artifact"], r["version"] or 0))
 
     artifacts = sorted(
