@@ -261,9 +261,12 @@ def audit_project():
 def audit_input_lineage(input_files, planned_output=None):
     """Pre-write check before you write ``planned_output`` from these input files. Flags two things the
     filenames alone don't reveal: (1) MERGING these inputs would collide on divergent versions of one
-    artifact (a version_mix in their combined lineage), and (2) the inputs already REST on flagged data —
-    a stale or mixed cell in their FOUNDATION (ancestry), e.g. an input that is the current version of its
-    artifact but was itself built from a since-superseded source. Backed by core.audit."""
+    artifact (``mixed`` — a version_mix in their combined lineage), and (2) the inputs already REST on
+    flagged data — a stale or mixed cell in their FOUNDATION (ancestry), e.g. an input that is the current
+    version of its artifact but was itself built from a since-superseded source (``foundation``). For a
+    mix, ``foundation`` overlaps ``mixed`` by naming the same artifact but adds the culprit cell; only
+    ``foundation`` ever carries STALENESS (the merged inputs are latest, so the merge itself is never
+    stale). Backed by core.audit."""
     if isinstance(input_files, str):
         input_files = [input_files]
     reader = _reader()
@@ -277,16 +280,19 @@ def audit_input_lineage(input_files, planned_output=None):
         else:
             missing.append(f)
     if not vids:
-        return {"planned_output": planned_output, "missing_inputs": missing,
+        return {"planned_output": planned_output, "missing_inputs": missing, "foundation": [],
                 "verdict": "LINEAGE_MISSING" if missing else "NOT_APPLICABLE"}
-    combo = audit_inputs(g, vids)                             # mix from MERGING the inputs (hypothetical node)
+    combo = audit_inputs(g, vids)                             # combination mix from MERGING the inputs
+    # Seeded cone (a subset re-read, NOT the full g): it truncates co-outputs, keeping this foundation
+    # cone-consistent with review_subgraph. audit_graph(g) filtered in-memory would instead pull in
+    # co-output mixes (the parked full-graph question) — so the extra read is load-bearing, not laziness.
     cone = reader.read_graph(pid, seeds=vids)                 # the inputs' own FOUNDATION (their ancestry)
     foundation = flagged_verdicts(audit_graph(cone), {n.id: n.label for n in cone.nodes})
     mix = combo.level == VERSION_MIX or any(f["verdict"] == VERSION_MIX for f in foundation)
-    stale = bool(combo.stale) or any(f["verdict"] == STALE_INPUT for f in foundation)
+    stale = any(f["verdict"] == STALE_INPUT for f in foundation)   # combo never stales: vids are latest
     return {"planned_output": planned_output, "missing_inputs": missing,
             "verdict": VERSION_MIX if mix else STALE_INPUT if stale else CLEAN,
-            "mixed": issues(combo.mixed), "stale": issues(combo.stale), "foundation": foundation}
+            "mixed": issues(combo.mixed), "foundation": foundation}
 
 
 def _resolve_cone(reader, proj, refs):

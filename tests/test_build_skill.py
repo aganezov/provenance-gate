@@ -73,8 +73,10 @@ def test_inlined_kernel_audits_input_lineage(cs_conn):
     ns = _exec_kernel(_FakeHost(cs_conn))
     clean = ns["audit_input_lineage"](["stats.csv"], planned_output="figure.png")
     assert clean["verdict"] == "clean" and clean["missing_inputs"] == []
+    assert clean["foundation"] == []   # a clean input rests on a clean foundation
     missing = ns["audit_input_lineage"](["nope.csv"])
     assert missing["verdict"] == "LINEAGE_MISSING" and missing["missing_inputs"] == ["nope.csv"]
+    assert missing["foundation"] == []   # early-exit return keeps the uniform shape
 
 
 def test_audit_input_lineage_flags_foundation_staleness(cs_conn):
@@ -92,7 +94,7 @@ def test_audit_input_lineage_flags_foundation_staleness(cs_conn):
     ns = _exec_kernel(_FakeHost(cs_conn))
     out = ns["audit_input_lineage"](["note.txt"], planned_output="fig.png")
     assert out["verdict"] == "stale_input"   # was 'clean' before the foundation audit was added
-    assert out["stale"] == [] and out["mixed"] == []   # the planned merge itself is clean...
+    assert out["mixed"] == []                # the planned merge is clean (no combination mix)...
     assert any(f["verdict"] == "stale_input" and f["cell"] == "cell 1"
                for f in out["foundation"])   # ...the staleness lives in the FOUNDATION (c1)
 
@@ -122,6 +124,7 @@ def test_audit_input_lineage_localizes_foundation_mix(cs_conn):
     cs_conn.commit()
     out = _exec_kernel(_FakeHost(cs_conn))["audit_input_lineage"](["merged.csv"])
     assert out["verdict"] == "version_mix"
+    assert any(m["artifact"] == "raw.csv" for m in out["mixed"])   # combo (merge) names the mix...
     mixcell = next(f for f in out["foundation"] if f["verdict"] == "version_mix")
     assert mixcell["cell"] == "cell 7" and any(m["artifact"] == "raw.csv" for m in mixcell["mixed"])
     assert any(f["verdict"] == "stale_input" and f["cell"] == "cell 5" for f in out["foundation"])
