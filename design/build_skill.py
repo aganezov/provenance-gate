@@ -433,6 +433,9 @@ def review_selection(nodes, scope="selection"):
     full = reader.read_project_graph(proj["id"])   # the AUTHORITATIVE graph — same basis as the cockpit
     producer_of = _producer_map(full)              # version id -> its producing node (shared with audit)
     keep = {producer_of[v] for v in selected if v in producer_of}
+    if not keep:   # versions resolved but none has a producing node in the graph — an inconsistent
+        return {"project": proj["id"], "status": "seeds_no_producers", "nodes": nodes,   # DB, not an
+                "next": "the selected versions have no producing cell in this project (unexpected — the graph may be inconsistent)"}
     kit = review_kit(induced_subgraph(full, keep), scope, verdicts=audit_graph(full))
     kit["basis"] = "full_project_audit"
     kit["trusted_inputs"] = _trusted_inputs(full, keep)

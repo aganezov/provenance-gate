@@ -189,6 +189,23 @@ def test_inlined_kernel_review_selection_unresolved(cs_conn):
     assert ns["review_selection"]("nonexistent.csv")["status"] == "seeds_unresolved"
 
 
+class _ResolveReturnsPhantom(_FakeHost):
+    """resolve_seeds yields a version id with NO producing node in the full graph — an inconsistent
+    DB that can't arise with consistent data (resolve_seeds is a subset of read_project_graph, and
+    derive builds a node for every version). Simulated to exercise the empty-keep guard."""
+
+    def query(self, sql, scope=None):
+        if "OR av.id IN" in sql:                     # the resolve_seeds three-way match
+            return [{"id": "phantom_no_producer"}]
+        return super().query(sql, scope)
+
+
+def test_review_selection_seeds_no_producers(cs_conn):
+    # a resolved-but-producerless selection reports seeds_no_producers, not a silent nodes:0 brief.
+    kit = _exec_kernel(_ResolveReturnsPhantom(cs_conn))["review_selection"]("note.txt")
+    assert kit["status"] == "seeds_no_producers"
+
+
 def test_inlined_kernel_review_chat(cs_conn, tmp_path, monkeypatch):
     # review_chat resolves the current conversation from the CWD basename (= the frame id), seeds
     # from what THIS chat produced, and returns review_kit's brief. fd041418 made stats.csv ->
