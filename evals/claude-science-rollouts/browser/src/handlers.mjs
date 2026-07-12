@@ -146,7 +146,7 @@ export function createSessionDetachHandler({ runCommand = runCli } = {}) {
 
 export function createProjectInspectHandler({ runCommand = runCli } = {}) {
   return async function inspectProject(payload, context) {
-    const result = await runObservation(
+    const result = await runBoundaryCode(
       runCommand,
       buildProjectInspectSource(payload.project_id),
       context,
@@ -173,7 +173,7 @@ export function createProjectInspectHandler({ runCommand = runCli } = {}) {
 
 export function createChatInspectHandler({ runCommand = runCli } = {}) {
   return async function inspectChat(payload, context) {
-    const result = await runObservation(
+    const result = await runBoundaryCode(
       runCommand,
       buildChatInspectSource(
         payload.project_id,
@@ -217,7 +217,7 @@ export function createChatInspectHandler({ runCommand = runCli } = {}) {
 
 export function createContextInspectHandler({ runCommand = runCli } = {}) {
   return async function inspectContext(payload, context) {
-    const result = await runObservation(
+    const result = await runBoundaryCode(
       runCommand,
       buildContextInspectSource(payload.project_id),
       context,
@@ -649,22 +649,6 @@ function browserStateError(code) {
     messages[code] ?? "Browser state is malformed or ambiguous",
     { retryable: false },
   );
-}
-
-async function runObservation(runCommand, source, context) {
-  const stdout = await runCommand(
-    ["--raw", `-s=${context.session.session_id}`, "run-code", source],
-    { deadlineMs: context.deadlineMs },
-  );
-  const result = parseCliJson(stdout);
-  if (result === null || typeof result !== "object" || Array.isArray(result)) {
-    throw new BoundaryError(
-      "CLI_INVALID_OUTPUT",
-      "Browser CLI returned a non-object value",
-      { retryable: true },
-    );
-  }
-  return result;
 }
 
 function verifyOrigin(result, context) {

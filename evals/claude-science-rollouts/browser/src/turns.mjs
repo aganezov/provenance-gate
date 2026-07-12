@@ -155,6 +155,10 @@ const POLL_TURN_SOURCE = `async ({
     const observation = await collect(page);
     verifyIdentity(observation);
     const users = observation.transcript.filter((turn) => turn.role === "user");
+    // Cost note: this re-hashes every baseline user turn each poll cycle — up to one
+    // page.evaluate round-trip per baseline turn (bounded at 256) per ~400ms interval.
+    // For the bare PBMC replicate the baseline is a handful of turns, so this is cheap;
+    // a long prior transcript would make each cycle proportionally heavier.
     for (const baseline of baselineUserTurns) {
       const current = users.find((turn) => turn.turn_id === baseline.turn_id);
       if (!current || await sha256(normalizeVisibleText(current.text)) !== baseline.sha256) {
@@ -306,7 +310,13 @@ export function buildSubmitTurnSource({
       await composer.click();
       const inserted = await page.evaluate((text) => {
         const target = document.activeElement;
-        if (!(target instanceof HTMLElement) || target.getAttribute("role") !== "textbox") {
+        // The composer locator accepts either a role=textbox element or a bare
+        // contenteditable div, so the insertion guard must accept both — otherwise a
+        // valid contenteditable composer is rejected as MALFORMED_BROWSER_STATE.
+        if (
+          !(target instanceof HTMLElement) ||
+          (target.getAttribute("role") !== "textbox" && !target.isContentEditable)
+        ) {
           return false;
         }
         return document.execCommand("insertText", false, text);

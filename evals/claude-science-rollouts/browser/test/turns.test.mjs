@@ -89,6 +89,28 @@ test("submit source contains one send and wait source cannot submit", () => {
   assert.match(approval, /Deny/);
 });
 
+test("submit insertion guard accepts a contenteditable composer, not only role=textbox", () => {
+  // Regression for selector/guard skew: the composer locator admits either a
+  // role=textbox element or a bare contenteditable div, so the insertion guard must
+  // accept both. The prior guard checked role=textbox alone and silently rejected a
+  // valid contenteditable composer as MALFORMED_BROWSER_STATE.
+  const submit = buildSubmitTurnSource({
+    origin: "http://127.0.0.1:8875",
+    projectId: "project-001",
+    chatId: "chat-001",
+    rootMode: "new",
+    rootFrameId: null,
+    prompt: "Do one thing",
+    authoredPromptSha256: "a".repeat(64),
+    expectedDeliverySha256: "b".repeat(64),
+    deadlineMs: 15000,
+  });
+  // The locator admits a contenteditable composer...
+  assert.match(submit, /\[contenteditable="true"\]/);
+  // ...and the insertion guard must accept it too, not only role=textbox.
+  assert.match(submit, /isContentEditable/);
+});
+
 test("resumed polling rejects a later user turn before settlement", async () => {
   const prompt = "Target prompt";
   const source = buildWaitTurnSource({

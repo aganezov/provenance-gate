@@ -243,6 +243,7 @@ function pageObservationHelpers() {
     const cards = [];
     for (const [index, control] of allowControls.entries()) {
       let card = control.parentElement;
+      let cardFound = false;
       for (let depth = 0; card && depth < 8; depth += 1) {
         const buttons = visibleElements(card, "button");
         const hasDeny = buttons.some((button) =>
@@ -250,10 +251,16 @@ function pageObservationHelpers() {
             button.getAttribute("aria-label") ?? button.textContent ?? "",
           ),
         );
-        if (hasDeny) break;
+        if (hasDeny) {
+          cardFound = true;
+          break;
+        }
         card = card.parentElement;
       }
-      if (!card) return null;
+      // Only a container that actually holds the Deny control is the card. If the walk
+      // exhausts its depth budget without one, `card` is an arbitrary ancestor — reject
+      // rather than extract a heading from the wrong element.
+      if (!cardFound || !card) return null;
       const headings = visibleElements(card, 'h1,h2,h3,h4,[role="heading"]');
       if (headings.length !== 1) return null;
       const title = (headings[0].textContent ?? "")
