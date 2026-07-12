@@ -5085,6 +5085,10 @@ function initCy(){
   // and the normal cards-over-canvas layering returns the instant the drag ends.
   cy.on('boxstart', () => { const c = cy.container(); if (c) c.style.zIndex = '30'; });
   cy.on('boxend', () => { const c = cy.container(); if (c) c.style.zIndex = ''; });
+  // safety net: if a box gesture is interrupted (mouseup outside the window, or a live re-render tears
+  // the elements down mid-drag) boxend may not fire, leaving the canvas above the card overlay and the
+  // cards unclickable. Any pointerup restores it, so the state self-heals on the next interaction.
+  window.addEventListener('pointerup', () => { const c = cy.container(); if (c && c.style.zIndex === '30') c.style.zIndex = ''; }, true);
 
   // manual pan / zoom un-sticks auto-fit (programmatic fit does not touch this)
   el.cyBox.addEventListener('wheel', () => setAutofit(false), { passive: true });
@@ -5942,8 +5946,14 @@ function syncReviewBtn(){
   if (cp) cp.disabled = n === 0;
   if (clr) clr.disabled = n === 0;
 }
+function isSeedable(id){   // a node contributes to the hand-off only if it has an output version to seed
+  const n = state.graph && state.graph.nodes.find(x => x.id === id);
+  return !!(n && (n.output_surface || []).some(a => a.artifact_version_id));
+}
 function addReviewMember(id){
-  if (id && state.cards[id] && !state.reviewSet.has(id)){   // must be a real, rendered graph node (not a frame / unknown id)
+  // require a real rendered node (not a frame/unknown id) AND a seedable output — otherwise the HUD
+  // count + prompt would list a node that reviewSeeds() silently drops (an output-less computation).
+  if (id && state.cards[id] && isSeedable(id) && !state.reviewSet.has(id)){
     state.reviewSet.add(id);
     state.cards[id].classList.add('picked');
     PG.action('review_add', { node: id, size: state.reviewSet.size });
