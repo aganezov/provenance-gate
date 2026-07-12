@@ -137,6 +137,75 @@ def test_inlined_kernel_review_subgraph_unresolved(cs_conn):
     assert ns["review_subgraph"]("nonexistent.csv")["status"] == "seeds_unresolved"
 
 
+def test_inlined_kernel_review_selection(cs_conn):
+    # review_selection shows EXACTLY the picked node (induced structure), not a full cone. Selecting
+    # note.txt gives a 1-node brief (just c1); stats.csv is NOT drawn but shows as a trusted_input
+    # (what the selection consumes from outside it). Verdicts come from the full-project audit.
+    ns = _exec_kernel(_FakeHost(cs_conn))
+    kit = ns["review_selection"]("note.txt")
+    assert kit["scope"] == "selection" and kit["nodes"] == 1   # just the picked node, not the cone
+    assert kit["basis"] == "full_project_audit" and "note" in kit
+    assert "note.txt" in kit["focus"]
+    assert "stats.csv" in {t["artifact"] for t in kit["trusted_inputs"]}   # the excluded trunk dep
+    for key in ("flags", "lineage", "artifacts", "trusted_inputs"):
+        assert key in kit
+
+
+def test_review_selection_mix_verdict_from_full_graph(cs_conn):
+    # a TRANSITIVE fork mix: raw.csv @v1/v2 -> c_a (int_a from v1), c_b (int_b from v2); c_m merges
+    # int_a+int_b. Select ONLY merged.csv: the induced brief is 1 node whose own inputs are both
+    # latest (auditing it ALONE -> clean), but the FULL-project audit flags version_mix on raw.csv.
+    # The flag names raw.csv (mixed field); raw is NOT a direct input, so it is absent from
+    # trusted_inputs (direct-only) while int_a/int_b are. Pins verdicts-from-full AND the note.
+    cs_conn.executemany("INSERT INTO artifacts VALUES(?,?,?,?)", [
+        ("a_raw", "proj_smoke", "raw.csv", "v_raw2"),
+        ("a_ia", "proj_smoke", "int_a.csv", "v_ia"),
+        ("a_ib", "proj_smoke", "int_b.csv", "v_ib"),
+        ("a_m", "proj_smoke", "merged.csv", "v_m")])
+    cs_conn.executemany("INSERT INTO execution_log VALUES(?,?,?,?)", [
+        ("c_a", "fd041418", 5, "int_a"), ("c_b", "fd041418", 6, "int_b"),
+        ("c_m", "fd041418", 7, "merge")])
+    cs_conn.executemany("INSERT INTO artifact_versions VALUES(?,?,?,?,?,?,?,?)", [
+        ("v_raw1", "a_raw", 1, "c", "p", None, None, None),   # source raw v1
+        ("v_raw2", "a_raw", 2, "c", "p", None, None, None),   # source raw v2 (head)
+        ("v_ia", "a_ia", 1, "c", "p", None, "c_a", "fd041418"),
+        ("v_ib", "a_ib", 1, "c", "p", None, "c_b", "fd041418"),
+        ("v_m", "a_m", 1, "c", "p", None, "c_m", "fd041418")])
+    cs_conn.executemany("INSERT INTO artifact_dependencies VALUES(?,?,?)", [
+        ("v_ia", "v_raw1", "raw.csv"), ("v_ib", "v_raw2", "raw.csv"),
+        ("v_m", "v_ia", "int_a.csv"), ("v_m", "v_ib", "int_b.csv")])
+    cs_conn.commit()
+    kit = _exec_kernel(_FakeHost(cs_conn))["review_selection"]("merged.csv")
+    assert kit["nodes"] == 1 and kit["basis"] == "full_project_audit"
+    mix = [f for f in kit["flags"] if f["verdict"] == "version_mix"]
+    assert mix and any(m["artifact"] == "raw.csv" for m in mix[0]["mixed"])   # from the FULL audit
+    ti = {t["artifact"] for t in kit["trusted_inputs"]}
+    assert "raw.csv" not in ti                    # transitive root -> not a direct input, not shown
+    assert {"int_a.csv", "int_b.csv"} <= ti       # the direct deps ARE the trusted boundary
+
+
+def test_inlined_kernel_review_selection_unresolved(cs_conn):
+    ns = _exec_kernel(_FakeHost(cs_conn))
+    assert ns["review_selection"]("nonexistent.csv")["status"] == "seeds_unresolved"
+
+
+class _ResolveReturnsPhantom(_FakeHost):
+    """resolve_seeds yields a version id with NO producing node in the full graph — an inconsistent
+    DB that can't arise with consistent data (resolve_seeds is a subset of read_project_graph, and
+    derive builds a node for every version). Simulated to exercise the empty-keep guard."""
+
+    def query(self, sql, scope=None):
+        if "OR av.id IN" in sql:                     # the resolve_seeds three-way match
+            return [{"id": "phantom_no_producer"}]
+        return super().query(sql, scope)
+
+
+def test_review_selection_seeds_no_producers(cs_conn):
+    # a resolved-but-producerless selection reports seeds_no_producers, not a silent nodes:0 brief.
+    kit = _exec_kernel(_ResolveReturnsPhantom(cs_conn))["review_selection"]("note.txt")
+    assert kit["status"] == "seeds_no_producers"
+
+
 def test_inlined_kernel_review_chat(cs_conn, tmp_path, monkeypatch):
     # review_chat resolves the current conversation from the CWD basename (= the frame id), seeds
     # from what THIS chat produced, and returns review_kit's brief. fd041418 made stats.csv ->
