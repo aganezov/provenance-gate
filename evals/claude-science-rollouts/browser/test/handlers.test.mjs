@@ -4,6 +4,9 @@ import test from "node:test";
 import {
   SESSION_INSPECT_SOURCE,
   createDefaultHandlers,
+  createChatInspectHandler,
+  createContextInspectHandler,
+  createProjectInspectHandler,
   createSessionAttachHandler,
   createSessionDetachHandler,
   createSessionInspectHandler,
@@ -308,5 +311,194 @@ test("default handlers attach an owner from BROWSER_OWNER_NAME", async () => {
   } finally {
     if (previous === undefined) delete process.env.BROWSER_OWNER_NAME;
     else process.env.BROWSER_OWNER_NAME = previous;
+  }
+});
+
+test("project inspection returns a verified rooted observation", async () => {
+  let invocation;
+  const handler = createProjectInspectHandler({
+    async runCommand(args, options) {
+      invocation = { args, options };
+      return JSON.stringify({
+        _origin: context.session.origin,
+        project_id: "project-001",
+        verified: true,
+        composer_empty: true,
+        user_turn_count: 1,
+        root_frame_id: "root-001",
+        root_state: "completed",
+        _root_project_id: "project-001",
+      });
+    },
+  });
+  assert.deepEqual(
+    await handler({ project_id: "project-001" }, context),
+    {
+      project_id: "project-001",
+      verified: true,
+      composer_empty: true,
+      user_turn_count: 1,
+      root_frame_id: "root-001",
+      root_state: "completed",
+    },
+  );
+  assert.deepEqual(invocation.options, { deadlineMs: 15000 });
+  assert.deepEqual(invocation.args.slice(0, 3), [
+    "--raw",
+    "-s=session-001",
+    "run-code",
+  ]);
+});
+
+test("chat inspection returns bounded transcript and identities", async () => {
+  const handler = createChatInspectHandler({
+    async runCommand() {
+      return JSON.stringify({
+        _origin: context.session.origin,
+        project_id: "project-001",
+        chat_id: "chat-001",
+        transcript: [
+          {
+            turn_id: "turn-user",
+            role: "user",
+            text: "Question",
+            truncated: false,
+          },
+          {
+            turn_id: "turn-assistant",
+            role: "assistant",
+            text: "Answer",
+            truncated: false,
+          },
+        ],
+        user_turn_count: 1,
+        composer_empty: true,
+        root_frame_id: "root-001",
+        response_control_id: "turn-assistant",
+        current_turn_state: "indeterminate",
+        approval_cards: [],
+        _root_project_id: "project-001",
+        _expected: {
+          project_id: "project-001",
+          chat_id: "chat-001",
+          root_frame_id: "root-001",
+        },
+      });
+    },
+  });
+  const result = await handler(
+    {
+      project_id: "project-001",
+      chat_id: "chat-001",
+      root_frame_id: "root-001",
+    },
+    context,
+  );
+  assert.equal(result.project_id, "project-001");
+  assert.equal(result.chat_id, "chat-001");
+  assert.equal(result.transcript.length, 2);
+  assert.equal(result.transcript[0].turn_id, "turn-user");
+});
+
+test("context inspection returns only skills and context hash", async () => {
+  const handler = createContextInspectHandler({
+    async runCommand() {
+      return JSON.stringify({
+        _origin: context.session.origin,
+        project_id: "project-001",
+        enabled_skills: ["Audit"],
+        context_hash: "a".repeat(64),
+      });
+    },
+  });
+  assert.deepEqual(
+    await handler({ project_id: "project-001" }, context),
+    {
+      project_id: "project-001",
+      enabled_skills: ["Audit"],
+      context_hash: "a".repeat(64),
+    },
+  );
+});
+
+test("G3a observation handlers reject origin and identity drift", async () => {
+  const navigation = createProjectInspectHandler({
+    async runCommand() {
+      return JSON.stringify({
+        _origin: "http://127.0.0.1:9999",
+        project_id: "project-001",
+      });
+    },
+  });
+  await assert.rejects(
+    navigation({ project_id: "project-001" }, context),
+    (error) => error instanceof BoundaryError && error.code === "NAVIGATION_DRIFT",
+  );
+
+  const identity = createChatInspectHandler({
+    async runCommand() {
+      return JSON.stringify({
+        _origin: context.session.origin,
+        project_id: "project-other",
+        chat_id: "chat-001",
+      });
+    },
+  });
+  await assert.rejects(
+    identity({ project_id: "project-001", chat_id: "chat-001" }, context),
+    (error) => error instanceof BoundaryError && error.code === "IDENTITY_MISMATCH",
+  );
+
+  const unexpectedRoot = createChatInspectHandler({
+    async runCommand() {
+      return JSON.stringify({
+        _origin: context.session.origin,
+        project_id: "project-001",
+        chat_id: "chat-001",
+        root_frame_id: "root-001",
+        _root_project_id: "project-001",
+      });
+    },
+  });
+  await assert.rejects(
+    unexpectedRoot({ project_id: "project-001", chat_id: "chat-001" }, context),
+    (error) => error instanceof BoundaryError && error.code === "IDENTITY_MISMATCH",
+  );
+
+  const wrongRootProject = createChatInspectHandler({
+    async runCommand() {
+      return JSON.stringify({
+        _origin: context.session.origin,
+        project_id: "project-001",
+        chat_id: "chat-001",
+        root_frame_id: "root-001",
+        _root_project_id: "project-other",
+      });
+    },
+  });
+  await assert.rejects(
+    wrongRootProject(
+      {
+        project_id: "project-001",
+        chat_id: "chat-001",
+        root_frame_id: "root-001",
+      },
+      context,
+    ),
+    (error) => error instanceof BoundaryError && error.code === "IDENTITY_MISMATCH",
+  );
+});
+
+test("G3a observation handlers reject malformed and non-object CLI output", async () => {
+  for (const payload of ["not JSON", "[]", "42"]) {
+    const handler = createProjectInspectHandler({
+      async runCommand() {
+        return payload;
+      },
+    });
+    await assert.rejects(
+      handler({ project_id: "project-001" }, context),
+      (error) => error instanceof BoundaryError && error.code === "CLI_INVALID_OUTPUT",
+    );
   }
 });

@@ -17,6 +17,20 @@ export const OUTCOMES = new Set([
 ]);
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
+const SHA256 = /^[a-f0-9]{64}$/;
+const TURN_STATES = new Set([
+  "busy",
+  "settled",
+  "approval_required",
+  "input_required",
+  "indeterminate",
+  "navigation_drift",
+  "failed",
+]);
+const MAX_TRANSCRIPT_TURNS = 256;
+const MAX_APPROVAL_CARDS = 8;
+const MAX_ENABLED_SKILLS = 256;
+const MAX_TURN_TEXT_BYTES = 16384;
 const CREDENTIAL_KEYS = new Set([
   "authorization",
   "cookie",
@@ -100,6 +114,26 @@ export function validateRequest(value) {
   ) {
     exactKeys(request.payload, [], "request.payload");
   }
+  if (["project.inspect", "agent_context.inspect"].includes(request.operation)) {
+    exactKeys(request.payload, ["project_id"], "request.payload");
+    identifier(request.payload.project_id, "request.payload.project_id");
+  }
+  if (request.operation === "chat.inspect") {
+    exactKeys(
+      request.payload,
+      ["project_id", "chat_id", "root_frame_id"],
+      "request.payload",
+      ["root_frame_id"],
+    );
+    identifier(request.payload.project_id, "request.payload.project_id");
+    identifier(request.payload.chat_id, "request.payload.chat_id");
+    if ("root_frame_id" in request.payload) {
+      identifier(
+        request.payload.root_frame_id,
+        "request.payload.root_frame_id",
+      );
+    }
+  }
   // Redundant when reached via parseRequestText (raw text was already size-checked), but
   // validateRequest is exported and may be called directly on an untrusted object — keep it.
   if (jsonBytes(request) > MAX_REQUEST_BYTES) {
@@ -130,6 +164,18 @@ function validateOperationResult(operation, result) {
     boolean(result.detached, "response.result.detached");
     return;
   }
+  if (operation === "project.inspect") {
+    validateProjectObservation(result);
+    return;
+  }
+  if (operation === "chat.inspect") {
+    validateChatObservation(result);
+    return;
+  }
+  if (operation === "agent_context.inspect") {
+    validateContextObservation(result);
+    return;
+  }
   if (!["session.attach", "session.inspect"].includes(operation)) return;
   exactKeys(
     result,
@@ -139,6 +185,176 @@ function validateOperationResult(operation, result) {
   boolean(result.authenticated, "response.result.authenticated");
   origin(result.origin, "response.result.origin");
   boolean(result.profile_ready, "response.result.profile_ready");
+}
+
+function validateProjectObservation(result) {
+  exactKeys(
+    result,
+    [
+      "project_id",
+      "verified",
+      "composer_empty",
+      "user_turn_count",
+      "root_frame_id",
+      "root_state",
+    ],
+    "response.result",
+  );
+  identifier(result.project_id, "response.result.project_id");
+  boolean(result.verified, "response.result.verified");
+  boolean(result.composer_empty, "response.result.composer_empty");
+  boundedInteger(
+    result.user_turn_count,
+    0,
+    1000000,
+    "response.result.user_turn_count",
+  );
+  nullableIdentifier(result.root_frame_id, "response.result.root_frame_id");
+  nullableIdentifier(result.root_state, "response.result.root_state");
+  if ((result.root_frame_id === null) !== (result.root_state === null)) {
+    throw new BoundaryError(
+      "INVALID_RESPONSE",
+      "Project root identity and state must be jointly present or absent",
+    );
+  }
+}
+
+function validateChatObservation(result) {
+  exactKeys(
+    result,
+    [
+      "project_id",
+      "chat_id",
+      "transcript",
+      "user_turn_count",
+      "composer_empty",
+      "root_frame_id",
+      "response_control_id",
+      "current_turn_state",
+      "approval_cards",
+    ],
+    "response.result",
+  );
+  identifier(result.project_id, "response.result.project_id");
+  identifier(result.chat_id, "response.result.chat_id");
+  array(result.transcript, MAX_TRANSCRIPT_TURNS, "response.result.transcript");
+  const turnIds = new Set();
+  let observedUsers = 0;
+  for (const [index, turn] of result.transcript.entries()) {
+    const path = `response.result.transcript[${index}]`;
+    object(turn, path);
+    exactKeys(turn, ["turn_id", "role", "text", "truncated"], path);
+    identifier(turn.turn_id, `${path}.turn_id`);
+    if (turnIds.has(turn.turn_id)) {
+      throw new BoundaryError("INVALID_RESPONSE", "Transcript turn IDs must be unique");
+    }
+    turnIds.add(turn.turn_id);
+    if (!["user", "assistant"].includes(turn.role)) {
+      throw new BoundaryError("INVALID_RESPONSE", `${path}.role is invalid`);
+    }
+    if (turn.role === "user") observedUsers += 1;
+    boundedString(turn.text, MAX_TURN_TEXT_BYTES, `${path}.text`);
+    boolean(turn.truncated, `${path}.truncated`);
+  }
+  boundedInteger(
+    result.user_turn_count,
+    0,
+    1000000,
+    "response.result.user_turn_count",
+  );
+  if (result.user_turn_count !== observedUsers) {
+    throw new BoundaryError(
+      "INVALID_RESPONSE",
+      "Chat user-turn count contradicts the transcript",
+    );
+  }
+  boolean(result.composer_empty, "response.result.composer_empty");
+  nullableIdentifier(result.root_frame_id, "response.result.root_frame_id");
+  nullableIdentifier(
+    result.response_control_id,
+    "response.result.response_control_id",
+  );
+  if (!TURN_STATES.has(result.current_turn_state)) {
+    throw new BoundaryError(
+      "INVALID_RESPONSE",
+      "response.result.current_turn_state is invalid",
+    );
+  }
+  array(
+    result.approval_cards,
+    MAX_APPROVAL_CARDS,
+    "response.result.approval_cards",
+  );
+  const cardIds = new Set();
+  for (const [index, card] of result.approval_cards.entries()) {
+    const path = `response.result.approval_cards[${index}]`;
+    object(card, path);
+    exactKeys(card, ["card_id", "fingerprint", "title", "kind"], path);
+    identifier(card.card_id, `${path}.card_id`);
+    if (cardIds.has(card.card_id)) {
+      throw new BoundaryError("INVALID_RESPONSE", "Approval card IDs must be unique");
+    }
+    cardIds.add(card.card_id);
+    sha256(card.fingerprint, `${path}.fingerprint`);
+    boundedText(card.title, 512, `${path}.title`);
+    identifier(card.kind, `${path}.kind`);
+  }
+  if (
+    (result.current_turn_state === "approval_required") !==
+    (result.approval_cards.length > 0)
+  ) {
+    throw new BoundaryError(
+      "INVALID_RESPONSE",
+      "Approval state contradicts observed approval cards",
+    );
+  }
+  if (
+    result.response_control_id !== null &&
+    !result.transcript.some(
+      (turn) =>
+        turn.turn_id === result.response_control_id && turn.role === "assistant",
+    )
+  ) {
+    throw new BoundaryError(
+      "INVALID_RESPONSE",
+      "Response-control identity must name an observed assistant turn",
+    );
+  }
+  if (result.root_frame_id === null && result.transcript.length > 0) {
+    throw new BoundaryError(
+      "INVALID_RESPONSE",
+      "A rootless chat cannot contain transcript turns",
+    );
+  }
+}
+
+function validateContextObservation(result) {
+  exactKeys(
+    result,
+    ["project_id", "enabled_skills", "context_hash"],
+    "response.result",
+  );
+  identifier(result.project_id, "response.result.project_id");
+  array(
+    result.enabled_skills,
+    MAX_ENABLED_SKILLS,
+    "response.result.enabled_skills",
+  );
+  const names = new Set();
+  for (const [index, skill] of result.enabled_skills.entries()) {
+    boundedText(skill, 256, `response.result.enabled_skills[${index}]`);
+    if (names.has(skill)) {
+      throw new BoundaryError("INVALID_RESPONSE", "Enabled skills must be unique");
+    }
+    names.add(skill);
+  }
+  if (
+    [...result.enabled_skills].sort().join("\0") !==
+    result.enabled_skills.join("\0")
+  ) {
+    throw new BoundaryError("INVALID_RESPONSE", "Enabled skills must be sorted");
+  }
+  sha256(result.context_hash, "response.result.context_hash");
 }
 
 export function errorResponse(request, error, elapsedMs) {
@@ -317,9 +533,35 @@ function identifier(value, path) {
   return value;
 }
 
+function nullableIdentifier(value, path) {
+  if (value === null) return value;
+  return identifier(value, path);
+}
+
+function sha256(value, path) {
+  if (typeof value !== "string" || !SHA256.test(value)) {
+    throw new BoundaryError("INVALID_TEXT", `${path} must be a SHA-256 digest`);
+  }
+  return value;
+}
+
 function boundedText(value, maximumBytes, path) {
   if (typeof value !== "string" || !value || Buffer.byteLength(value) > maximumBytes) {
     throw new BoundaryError("INVALID_TEXT", `${path} is invalid`);
+  }
+  return value;
+}
+
+function boundedString(value, maximumBytes, path) {
+  if (typeof value !== "string" || Buffer.byteLength(value) > maximumBytes) {
+    throw new BoundaryError("INVALID_TEXT", `${path} is invalid`);
+  }
+  return value;
+}
+
+function array(value, maximumLength, path) {
+  if (!Array.isArray(value) || value.length > maximumLength) {
+    throw new BoundaryError("INVALID_TYPE", `${path} must be a bounded array`);
   }
   return value;
 }

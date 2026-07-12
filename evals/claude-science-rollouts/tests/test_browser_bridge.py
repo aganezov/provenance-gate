@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from claude_science_rollouts.browser import (
+    ApprovalCard,
     BrowserBridge,
     BrowserClient,
     BrowserProcessError,
@@ -15,6 +16,10 @@ from claude_science_rollouts.browser import (
     BrowserRequest,
     BrowserSession,
     BrowserTimeoutError,
+    ChatObservation,
+    ContextObservation,
+    ProjectObservation,
+    TurnObservation,
     make_request,
     parse_response,
 )
@@ -149,6 +154,89 @@ def test_session_detach_result_is_exact_and_typed() -> None:
         parse_response(json.dumps(response), detach_request)
 
 
+def test_g3a_requests_are_exact_and_identity_typed() -> None:
+    project_request = make_request(
+        "project.inspect",
+        request_id="project-001",
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+        deadline_ms=15_000,
+        payload={"project_id": "project-001"},
+    )
+    assert project_request.payload == {"project_id": "project-001"}
+    chat_request = make_request(
+        "chat.inspect",
+        request_id="chat-001",
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+        deadline_ms=15_000,
+        payload={
+            "project_id": "project-001",
+            "chat_id": "chat-001",
+            "root_frame_id": "root-001",
+        },
+    )
+    assert chat_request.payload["root_frame_id"] == "root-001"
+    with pytest.raises(BrowserProtocolError, match="missing or unknown"):
+        make_request(
+            "project.inspect",
+            request_id="project-002",
+            session_id="session-001",
+            origin="http://127.0.0.1:8875",
+            deadline_ms=15_000,
+            payload={"project_id": "project-001", "extra": True},
+        )
+
+
+def test_g3a_response_validation_rejects_transcript_contradictions() -> None:
+    chat_request = make_request(
+        "chat.inspect",
+        request_id="chat-001",
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+        deadline_ms=15_000,
+        payload={"project_id": "project-001", "chat_id": "chat-001"},
+    )
+    result = {
+        "project_id": "project-001",
+        "chat_id": "chat-001",
+        "transcript": [
+            {"turn_id": "turn-user", "role": "user", "text": "Question", "truncated": False}
+        ],
+        "user_turn_count": 2,
+        "composer_empty": True,
+        "root_frame_id": "root-001",
+        "response_control_id": None,
+        "current_turn_state": "indeterminate",
+        "approval_cards": [],
+    }
+    response = {
+        "protocol_version": 1,
+        "request_id": "chat-001",
+        "operation": "chat.inspect",
+        "outcome": "completed",
+        "elapsed_ms": 1,
+        "result": result,
+    }
+    with pytest.raises(BrowserProtocolError, match="count contradicts"):
+        parse_response(json.dumps(response), chat_request)
+
+    result["user_turn_count"] = 1
+    result["transcript"][0]["text"] = "x" * 16_385
+    with pytest.raises(BrowserProtocolError, match="bounded string"):
+        parse_response(json.dumps(response), chat_request)
+
+    result["transcript"][0]["text"] = "Question"
+    result["transcript"][0]["role"] = "tool"
+    with pytest.raises(BrowserProtocolError, match="role"):
+        parse_response(json.dumps(response), chat_request)
+
+    result["transcript"][0]["role"] = "user"
+    result["response_control_id"] = "turn-user"
+    with pytest.raises(BrowserProtocolError, match="assistant turn"):
+        parse_response(json.dumps(response), chat_request)
+
+
 def test_real_python_to_node_mock_round_trip() -> None:
     node = shutil.which("node")
     if node is None:
@@ -212,6 +300,79 @@ def test_python_owns_attach_many_detach_lifecycle(tmp_path: Path) -> None:
         session.inspect(request_id="inspect-after-detach")
     with pytest.raises(RuntimeError, match="not attached"):
         session.detach(request_id="detach-duplicate")
+
+
+def test_typed_g3a_observations_cross_python_node_boundary(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is not installed")
+    client = BrowserClient(
+        bridge=BrowserBridge((node, str(MOCK_BOUNDARY)), cwd=tmp_path),
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+    )
+    session = BrowserSession(client)
+    session.attach(request_id="attach-001")
+
+    project = session.inspect_project("project-001", request_id="project-001")
+    assert project.observation == ProjectObservation(
+        project_id="project-001",
+        verified=True,
+        composer_empty=True,
+        user_turn_count=1,
+        root_frame_id="root-001",
+        root_state="completed",
+    )
+
+    chat = session.inspect_chat(
+        "project-001",
+        "chat-001",
+        request_id="chat-001",
+        root_frame_id="root-001",
+    )
+    assert chat.observation == ChatObservation(
+        project_id="project-001",
+        chat_id="chat-001",
+        transcript=(
+            TurnObservation("turn-user", "user", "Question", False),
+            TurnObservation("turn-assistant", "assistant", "Answer", False),
+        ),
+        user_turn_count=1,
+        composer_empty=True,
+        root_frame_id="root-001",
+        response_control_id="turn-assistant",
+        current_turn_state="indeterminate",
+        approval_cards=(),
+    )
+
+    context = session.inspect_context("project-001", request_id="context-001")
+    assert context.observation == ContextObservation(
+        project_id="project-001",
+        enabled_skills=frozenset({"Audit skill"}),
+        context_hash="a" * 64,
+    )
+    assert ApprovalCard("card-001", "b" * 64, "Permission", "approval").kind == "approval"
+    session.detach(request_id="detach-001")
+
+
+def test_typed_g3a_blank_chat_is_valid(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is not installed")
+    client = BrowserClient(
+        bridge=BrowserBridge((node, str(MOCK_BOUNDARY)), cwd=tmp_path),
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+    )
+    outcome = client.inspect_chat(
+        "project-001",
+        "draft-001",
+        request_id="chat-blank",
+    )
+    assert outcome.observation is not None
+    assert outcome.observation.root_frame_id is None
+    assert outcome.observation.transcript == ()
+    assert outcome.observation.user_turn_count == 0
 
 
 def test_typed_client_requires_explicit_absolute_working_directory() -> None:

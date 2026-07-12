@@ -39,6 +39,22 @@ OUTCOMES = frozenset({"not_started", "completed", "unknown_outcome"})
 
 Outcome = Literal["not_started", "completed", "unknown_outcome"]
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
+_SHA256 = re.compile(r"^[a-f0-9]{64}$")
+_TURN_STATES = frozenset(
+    {
+        "busy",
+        "settled",
+        "approval_required",
+        "input_required",
+        "indeterminate",
+        "navigation_drift",
+        "failed",
+    }
+)
+_MAX_TRANSCRIPT_TURNS = 256
+_MAX_APPROVAL_CARDS = 8
+_MAX_ENABLED_SKILLS = 256
+_MAX_TURN_TEXT_BYTES = 16_384
 _CREDENTIAL_KEYS = frozenset(
     {"authorization", "cookie", "credential", "credentials", "password", "secret", "token"}
 )
@@ -119,6 +135,15 @@ def make_request(
     _reject_credential_keys(body, "payload")
     if operation in {"session.attach", "session.inspect", "session.detach"} and body:
         raise BrowserProtocolError(f"{operation} payload must be empty")
+    if operation in {"project.inspect", "agent_context.inspect"}:
+        _exact_keys(body, {"project_id"}, set(), "payload")
+        _identifier(body["project_id"], "payload.project_id")
+    if operation == "chat.inspect":
+        _exact_keys(body, {"project_id", "chat_id"}, {"root_frame_id"}, "payload")
+        _identifier(body["project_id"], "payload.project_id")
+        _identifier(body["chat_id"], "payload.chat_id")
+        if "root_frame_id" in body:
+            _identifier(body["root_frame_id"], "payload.root_frame_id")
     request = BrowserRequest(
         request_id=request_id,
         operation=operation,
@@ -188,6 +213,15 @@ def _validate_operation_result(operation: str, result: Mapping[str, Any]) -> Non
         if not isinstance(result["detached"], bool):
             raise BrowserProtocolError("response.result.detached must be boolean")
         return
+    if operation == "project.inspect":
+        _validate_project_observation(result)
+        return
+    if operation == "chat.inspect":
+        _validate_chat_observation(result)
+        return
+    if operation == "agent_context.inspect":
+        _validate_context_observation(result)
+        return
     if operation not in {"session.attach", "session.inspect"}:
         return
     _exact_keys(
@@ -201,6 +235,130 @@ def _validate_operation_result(operation: str, result: Mapping[str, Any]) -> Non
     _bare_http_origin(result["origin"])
     if not isinstance(result["profile_ready"], bool):
         raise BrowserProtocolError("response.result.profile_ready must be boolean")
+
+
+def _validate_project_observation(result: Mapping[str, Any]) -> None:
+    _exact_keys(
+        result,
+        {
+            "project_id",
+            "verified",
+            "composer_empty",
+            "user_turn_count",
+            "root_frame_id",
+            "root_state",
+        },
+        set(),
+        "response.result",
+    )
+    _identifier(result["project_id"], "response.result.project_id")
+    _boolean(result["verified"], "response.result.verified")
+    _boolean(result["composer_empty"], "response.result.composer_empty")
+    _bounded_integer(result["user_turn_count"], 0, 1_000_000, "response.result.user_turn_count")
+    _nullable_identifier(result["root_frame_id"], "response.result.root_frame_id")
+    _nullable_identifier(result["root_state"], "response.result.root_state")
+    if (result["root_frame_id"] is None) != (result["root_state"] is None):
+        raise BrowserProtocolError(
+            "Project root identity and state must be jointly present or absent"
+        )
+
+
+def _validate_chat_observation(result: Mapping[str, Any]) -> None:
+    _exact_keys(
+        result,
+        {
+            "project_id",
+            "chat_id",
+            "transcript",
+            "user_turn_count",
+            "composer_empty",
+            "root_frame_id",
+            "response_control_id",
+            "current_turn_state",
+            "approval_cards",
+        },
+        set(),
+        "response.result",
+    )
+    _identifier(result["project_id"], "response.result.project_id")
+    _identifier(result["chat_id"], "response.result.chat_id")
+    transcript = _bounded_list(
+        result["transcript"], _MAX_TRANSCRIPT_TURNS, "response.result.transcript"
+    )
+    turn_ids: set[str] = set()
+    observed_users = 0
+    for index, value in enumerate(transcript):
+        path = f"response.result.transcript[{index}]"
+        turn = _mapping(value, path)
+        _exact_keys(turn, {"turn_id", "role", "text", "truncated"}, set(), path)
+        turn_id = _identifier(turn["turn_id"], f"{path}.turn_id")
+        if turn_id in turn_ids:
+            raise BrowserProtocolError("Transcript turn IDs must be unique")
+        turn_ids.add(turn_id)
+        if turn["role"] not in {"user", "assistant"}:
+            raise BrowserProtocolError(f"{path}.role is invalid")
+        if turn["role"] == "user":
+            observed_users += 1
+        _bounded_string(turn["text"], _MAX_TURN_TEXT_BYTES, f"{path}.text")
+        _boolean(turn["truncated"], f"{path}.truncated")
+    count = _bounded_integer(
+        result["user_turn_count"], 0, 1_000_000, "response.result.user_turn_count"
+    )
+    if count != observed_users:
+        raise BrowserProtocolError("Chat user-turn count contradicts the transcript")
+    _boolean(result["composer_empty"], "response.result.composer_empty")
+    _nullable_identifier(result["root_frame_id"], "response.result.root_frame_id")
+    response_control_id = _nullable_identifier(
+        result["response_control_id"], "response.result.response_control_id"
+    )
+    if result["current_turn_state"] not in _TURN_STATES:
+        raise BrowserProtocolError("response.result.current_turn_state is invalid")
+    cards = _bounded_list(
+        result["approval_cards"], _MAX_APPROVAL_CARDS, "response.result.approval_cards"
+    )
+    card_ids: set[str] = set()
+    for index, value in enumerate(cards):
+        path = f"response.result.approval_cards[{index}]"
+        card = _mapping(value, path)
+        _exact_keys(card, {"card_id", "fingerprint", "title", "kind"}, set(), path)
+        card_id = _identifier(card["card_id"], f"{path}.card_id")
+        if card_id in card_ids:
+            raise BrowserProtocolError("Approval card IDs must be unique")
+        card_ids.add(card_id)
+        _sha256(card["fingerprint"], f"{path}.fingerprint")
+        _bounded_text(card["title"], 512, f"{path}.title")
+        _identifier(card["kind"], f"{path}.kind")
+    if (result["current_turn_state"] == "approval_required") != bool(cards):
+        raise BrowserProtocolError("Approval state contradicts observed approval cards")
+    if response_control_id is not None and not any(
+        turn["turn_id"] == response_control_id and turn["role"] == "assistant"
+        for turn in transcript
+    ):
+        raise BrowserProtocolError("Response-control identity must name an observed assistant turn")
+    if result["root_frame_id"] is None and transcript:
+        raise BrowserProtocolError("A rootless chat cannot contain transcript turns")
+
+
+def _validate_context_observation(result: Mapping[str, Any]) -> None:
+    _exact_keys(
+        result,
+        {"project_id", "enabled_skills", "context_hash"},
+        set(),
+        "response.result",
+    )
+    _identifier(result["project_id"], "response.result.project_id")
+    skills = _bounded_list(
+        result["enabled_skills"], _MAX_ENABLED_SKILLS, "response.result.enabled_skills"
+    )
+    names: set[str] = set()
+    for index, skill in enumerate(skills):
+        name = _bounded_text(skill, 256, f"response.result.enabled_skills[{index}]")
+        if name in names:
+            raise BrowserProtocolError("Enabled skills must be unique")
+        names.add(name)
+    if list(skills) != sorted(skills):
+        raise BrowserProtocolError("Enabled skills must be sorted")
+    _sha256(result["context_hash"], "response.result.context_hash")
 
 
 def _parse_error(value: object, outcome: str) -> BrowserError:
@@ -245,6 +403,42 @@ def _exact_keys(
 def _identifier(value: object, name: str) -> str:
     if not isinstance(value, str) or not _IDENTIFIER.fullmatch(value):
         raise BrowserProtocolError(f"{name} must be a bounded identifier")
+    return value
+
+
+def _nullable_identifier(value: object, name: str) -> str | None:
+    if value is None:
+        return None
+    return _identifier(value, name)
+
+
+def _sha256(value: object, name: str) -> str:
+    if not isinstance(value, str) or not _SHA256.fullmatch(value):
+        raise BrowserProtocolError(f"{name} must be a SHA-256 digest")
+    return value
+
+
+def _bounded_text(value: object, maximum_bytes: int, name: str) -> str:
+    if not isinstance(value, str) or not value or len(value.encode()) > maximum_bytes:
+        raise BrowserProtocolError(f"{name} must be bounded text")
+    return value
+
+
+def _bounded_string(value: object, maximum_bytes: int, name: str) -> str:
+    if not isinstance(value, str) or len(value.encode()) > maximum_bytes:
+        raise BrowserProtocolError(f"{name} must be a bounded string")
+    return value
+
+
+def _bounded_list(value: object, maximum_length: int, name: str) -> list[Any]:
+    if not isinstance(value, list) or len(value) > maximum_length:
+        raise BrowserProtocolError(f"{name} must be a bounded list")
+    return value
+
+
+def _boolean(value: object, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise BrowserProtocolError(f"{name} must be boolean")
     return value
 
 

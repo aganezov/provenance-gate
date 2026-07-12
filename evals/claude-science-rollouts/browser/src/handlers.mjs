@@ -1,5 +1,10 @@
 import { BoundaryError } from "./protocol.mjs";
 import { runCli } from "./cli_runner.mjs";
+import {
+  buildChatInspectSource,
+  buildContextInspectSource,
+  buildProjectInspectSource,
+} from "./observations.mjs";
 
 const SESSION_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 
@@ -123,6 +128,129 @@ export function createSessionDetachHandler({ runCommand = runCli } = {}) {
   };
 }
 
+export function createProjectInspectHandler({ runCommand = runCli } = {}) {
+  return async function inspectProject(payload, context) {
+    const result = await runObservation(
+      runCommand,
+      buildProjectInspectSource(payload.project_id),
+      context,
+    );
+    verifyOrigin(result, context);
+    if (
+      result.project_id !== payload.project_id ||
+      result.verified !== true ||
+      result.composer_empty === null ||
+      result.user_turn_count === null ||
+      (result.root_frame_id !== null &&
+        result._root_project_id !== payload.project_id)
+    ) {
+      throw identityMismatch("Project observation identity is inconsistent");
+    }
+    const {
+      _origin: _discardOrigin,
+      _root_project_id: _discardRootProject,
+      ...observation
+    } = result;
+    return observation;
+  };
+}
+
+export function createChatInspectHandler({ runCommand = runCli } = {}) {
+  return async function inspectChat(payload, context) {
+    const result = await runObservation(
+      runCommand,
+      buildChatInspectSource(
+        payload.project_id,
+        payload.chat_id,
+        payload.root_frame_id ?? null,
+      ),
+      context,
+    );
+    verifyOrigin(result, context);
+    const expectedRoot = payload.root_frame_id ?? null;
+    if (
+      result.project_id !== payload.project_id ||
+      result.chat_id !== payload.chat_id ||
+      result.root_frame_id !== expectedRoot ||
+      (result.root_frame_id !== null &&
+        result._root_project_id !== payload.project_id)
+    ) {
+      throw identityMismatch("Chat observation identity is inconsistent");
+    }
+    if (
+      !Array.isArray(result.transcript) ||
+      !Array.isArray(result.approval_cards) ||
+      result.composer_empty === null ||
+      result.user_turn_count === null ||
+      result.current_turn_state === null
+    ) {
+      throw new BoundaryError(
+        "AMBIGUOUS_BROWSER_STATE",
+        "Chat observation could not be classified",
+      );
+    }
+    const {
+      _origin: _discardOrigin,
+      _expected: _discardExpected,
+      _root_project_id: _discardRootProject,
+      ...observation
+    } = result;
+    return observation;
+  };
+}
+
+export function createContextInspectHandler({ runCommand = runCli } = {}) {
+  return async function inspectContext(payload, context) {
+    const result = await runObservation(
+      runCommand,
+      buildContextInspectSource(payload.project_id),
+      context,
+    );
+    verifyOrigin(result, context);
+    if (
+      result.project_id !== payload.project_id ||
+      !Array.isArray(result.enabled_skills) ||
+      typeof result.context_hash !== "string"
+    ) {
+      throw identityMismatch("Context observation identity is inconsistent");
+    }
+    const { _origin: _discardOrigin, ...observation } = result;
+    return observation;
+  };
+}
+
+async function runObservation(runCommand, source, context) {
+  const stdout = await runCommand(
+    ["--raw", `-s=${context.session.session_id}`, "run-code", source],
+    { deadlineMs: context.deadlineMs },
+  );
+  const result = parseCliJson(stdout);
+  if (result === null || typeof result !== "object" || Array.isArray(result)) {
+    throw new BoundaryError(
+      "CLI_INVALID_OUTPUT",
+      "Browser CLI returned a non-object value",
+      { retryable: true },
+    );
+  }
+  return result;
+}
+
+function verifyOrigin(result, context) {
+  if (result._origin !== context.session.origin) {
+    throw new BoundaryError(
+      "NAVIGATION_DRIFT",
+      "Browser session is open on an unexpected origin",
+      { retryable: false },
+    );
+  }
+}
+
+function identityMismatch(message) {
+  return new BoundaryError("IDENTITY_MISMATCH", message, {
+    retryable: false,
+  });
+}
+
 function mutationFailure(action, error) {
   if (error instanceof BoundaryError && error.code === "CLI_UNAVAILABLE") {
     return error;
@@ -219,5 +347,8 @@ export function createDefaultHandlers(options = {}) {
     }),
     "session.inspect": createSessionInspectHandler(options),
     "session.detach": createSessionDetachHandler(options),
+    "project.inspect": createProjectInspectHandler(options),
+    "chat.inspect": createChatInspectHandler(options),
+    "agent_context.inspect": createContextInspectHandler(options),
   };
 }
