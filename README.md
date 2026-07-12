@@ -4,6 +4,12 @@ A deterministic trust gate for agentic science, running read-only over Claude Sc
 class of failure that's hard to catch by reading the output: a result quietly built on stale or
 version-conflicting upstream data.
 
+![In Claude Science, the agent renders the Provenance Gate cockpit as a read-only artifact; opening it and clicking the flagged cell 7 shows its deterministic version_mix verdict](docs/img/cockpit-demo.gif)
+
+*The gate inside Claude Science. The agent renders the cockpit as a read-only artifact; opening it and
+clicking the flagged cell shows the deterministic `version_mix` verdict, with the conflicting versions
+named.*
+
 ## The problem
 
 An agent doing research over many turns forks approaches, revises an upstream step, and re-runs. Along
@@ -45,8 +51,8 @@ the agent itself, so the paste is the bridge.
 
 ![The Provenance Gate cockpit inside Claude Science, with cell 7 flagged version_mix and its lineage reconverging on cells.qc.csv at v1 and v2](docs/img/cockpit-version-mix.png)
 
-*The cockpit, rendered by the agent as a read-only artifact inside Claude Science. Cell 7 is flagged
-`version_mix`; the panel names the conflict: `cells.qc.csv` reached at both v1 and v2.*
+*A closer look at the flagged cell. Cell 7 is `version_mix`, and the inspector names the conflict:
+`cells.qc.csv` reached at both v1 and v2.*
 
 ## How it's built
 
