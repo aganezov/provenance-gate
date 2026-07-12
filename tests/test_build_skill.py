@@ -73,8 +73,61 @@ def test_inlined_kernel_audits_input_lineage(cs_conn):
     ns = _exec_kernel(_FakeHost(cs_conn))
     clean = ns["audit_input_lineage"](["stats.csv"], planned_output="figure.png")
     assert clean["verdict"] == "clean" and clean["missing_inputs"] == []
+    assert clean["foundation"] == []   # a clean input rests on a clean foundation
     missing = ns["audit_input_lineage"](["nope.csv"])
     assert missing["verdict"] == "LINEAGE_MISSING" and missing["missing_inputs"] == ["nope.csv"]
+    assert missing["foundation"] == []   # early-exit return keeps the uniform shape
+
+
+def test_audit_input_lineage_flags_foundation_staleness(cs_conn):
+    # THE staleness-in-lineage regression. note.txt is the CURRENT version of its artifact, so a
+    # planned-node-only check (the old behavior) calls it clean: its one direct input is latest and
+    # a lone input can't mix. But its producer c1 read stats.csv v1, now superseded by v2 -> stale.
+    # RESTS on stale data. The FOUNDATION audit must surface that, flipping clean -> stale_input.
+    # Give stats.csv a v2 head so c1's consumption of v1 becomes stale.
+    cs_conn.execute("UPDATE artifacts SET latest_version_id='v_stats2' WHERE id='a_stats'")
+    cs_conn.execute("INSERT INTO execution_log VALUES('c_rev','fd041418',9,'re-run stats.csv')")
+    cs_conn.execute("INSERT INTO artifact_versions VALUES"
+                    "('v_stats2','a_stats',2,'ffff00','proj_smoke/a_stats/stats.csv',"
+                    "'v_stats','c_rev','fd041418')")
+    cs_conn.commit()
+    ns = _exec_kernel(_FakeHost(cs_conn))
+    out = ns["audit_input_lineage"](["note.txt"], planned_output="fig.png")
+    assert out["verdict"] == "stale_input"   # was 'clean' before the foundation audit was added
+    assert out["mixed"] == []                # the planned merge is clean (no combination mix)...
+    assert any(f["verdict"] == "stale_input" and f["cell"] == "cell 1"
+               for f in out["foundation"])   # ...the staleness lives in the FOUNDATION (c1)
+
+
+def test_audit_input_lineage_localizes_foundation_mix(cs_conn):
+    # the same transitive fork as the review_selection mix test: raw.csv v1/v2 -> int_a (v1), int_b
+    # (v2); merged.csv merges both. A pre-write check on merged.csv must report version_mix AND the
+    # `foundation` field must localize the merging cell (c_m = cell 7) naming raw.csv, plus the cell
+    # that read the stale raw v1 (c_a = cell 5). Pins that foundation localizes WHERE conflicts are.
+    cs_conn.executemany("INSERT INTO artifacts VALUES(?,?,?,?)", [
+        ("a_raw", "proj_smoke", "raw.csv", "v_raw2"),
+        ("a_ia", "proj_smoke", "int_a.csv", "v_ia"),
+        ("a_ib", "proj_smoke", "int_b.csv", "v_ib"),
+        ("a_m", "proj_smoke", "merged.csv", "v_m")])
+    cs_conn.executemany("INSERT INTO execution_log VALUES(?,?,?,?)", [
+        ("c_a", "fd041418", 5, "int_a"), ("c_b", "fd041418", 6, "int_b"),
+        ("c_m", "fd041418", 7, "merge")])
+    cs_conn.executemany("INSERT INTO artifact_versions VALUES(?,?,?,?,?,?,?,?)", [
+        ("v_raw1", "a_raw", 1, "c", "p", None, None, None),
+        ("v_raw2", "a_raw", 2, "c", "p", None, None, None),
+        ("v_ia", "a_ia", 1, "c", "p", None, "c_a", "fd041418"),
+        ("v_ib", "a_ib", 1, "c", "p", None, "c_b", "fd041418"),
+        ("v_m", "a_m", 1, "c", "p", None, "c_m", "fd041418")])
+    cs_conn.executemany("INSERT INTO artifact_dependencies VALUES(?,?,?)", [
+        ("v_ia", "v_raw1", "raw.csv"), ("v_ib", "v_raw2", "raw.csv"),
+        ("v_m", "v_ia", "int_a.csv"), ("v_m", "v_ib", "int_b.csv")])
+    cs_conn.commit()
+    out = _exec_kernel(_FakeHost(cs_conn))["audit_input_lineage"](["merged.csv"])
+    assert out["verdict"] == "version_mix"
+    assert any(m["artifact"] == "raw.csv" for m in out["mixed"])   # combo (merge) names the mix...
+    mixcell = next(f for f in out["foundation"] if f["verdict"] == "version_mix")
+    assert mixcell["cell"] == "cell 7" and any(m["artifact"] == "raw.csv" for m in mixcell["mixed"])
+    assert any(f["verdict"] == "stale_input" and f["cell"] == "cell 5" for f in out["foundation"])
 
 
 def test_inlined_kernel_renders_cockpit(cs_conn, tmp_path, monkeypatch):
