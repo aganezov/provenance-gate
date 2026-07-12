@@ -1,6 +1,6 @@
 # Repository guide for AI agents
 
-Conventions for the AI agents (Claude, Codex) and humans working in **provenance-gate** —
+Conventions for AI agents and humans working in **provenance-gate** —
 a deterministic, claim-level **trust gate** for agentic science that runs **read-only** over
 Claude Science (CS). Green means a reported value *faithfully reflects a computation*
 (transport), never that the analysis is correct. Trust-critical checks are deterministic
@@ -26,10 +26,10 @@ code; models only propose, humans confirm/attest.
   from the authoritative run conclusion, and diagnose any failure from the real logs.
 - **Dual review is advisory** — neither blocks. **Wait for both bots on the _latest_ commit
   before merging.** Auto-review fires on PR **open**; after you push new commits, re-trigger
-  explicitly with `@claude review` / `@codex review` — a review left on an earlier commit is
-  stale, not latest-commit coverage.
-- **Codex signals:** a 👍 reaction (often no comment) = no findings; a comment = findings.
-  Its review can lag — wait rather than re-trigger.
+  both reviewers explicitly — a review left on an earlier commit is stale, not latest-commit
+  coverage.
+- A 👍 reaction (often no comment) = no findings; a comment = findings. Reviews can lag —
+  wait rather than re-trigger.
 - **Merge when clean:** 0 blockers, gates green, mergeable. Never merge over an actionable
   finding — fix it or file a follow-up issue.
 - **Verify a review's claims before acting** — reviewers can cite the wrong line, fabricate a
