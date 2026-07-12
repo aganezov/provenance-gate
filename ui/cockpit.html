@@ -4805,11 +4805,11 @@ module.exports = __WEBPACK_EXTERNAL_MODULE__4__;
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/></svg>
         <span id="isolate-lbl">Isolate</span>
       </button>
-      <button id="btn-review" title="Review set: toggle on, click nodes to add them, then copy a review_subgraph prompt">
+      <button id="btn-review" title="Review set: click a node to add/remove, right-click for its upstream cone, shift-drag to box a group, then Review →">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
         <span id="review-lbl">Review</span>
       </button>
-      <button id="btn-review-copy" title="Copy a review_subgraph prompt for the picked nodes" disabled>Review →</button>
+      <button id="btn-review-copy" title="Hand the picked nodes to an agent — choose Selected only (exact) or Full cones" disabled>Review →</button>
       <button id="btn-review-clear" title="Clear the review set" disabled>Clear</button>
       <div class="divider"></div>
       <button id="zoom-out" title="Zoom out">–</button>
@@ -5055,13 +5055,19 @@ function initCy(){
       else { lastId = id; lastAt = now; }
       return;
     }
-    if (state.reviewMode){ addReviewMember(id); return; }   // review mode: a click ADDS to the review set
+    if (state.reviewMode){ toggleReviewMember(id); return; }   // review mode: a click TOGGLES membership
     selectNode(id);
     if (dbl){ zoomToNode(t); lastId = null; lastAt = 0; }
     else { lastId = id; lastAt = now; }
   });
   cy.on('tap', (e) => { if (e.target === cy) deselect(); });
-  cy.on('cxttap', 'node', (e) => { if (!e.target.isParent()) addLineageToReview(e.target.id()); });   // right-click -> add upstream lineage
+  cy.on('cxttap', 'node', (e) => { if (!e.target.isParent()) toggleLineageInReview(e.target.id()); });   // right-click -> toggle node + upstream cone
+  // shift-drag box (enabled only in review mode) folds the enclosed nodes into the set; keep cy's own
+  // selection clean since membership lives in state.reviewSet + the .picked outline, not cy :selected.
+  cy.on('boxselect', 'node', (e) => {
+    if (state.reviewMode && !e.target.isParent()) addReviewMember(e.target.id());
+    e.target.unselect();
+  });
 
   // manual pan / zoom un-sticks auto-fit (programmatic fit does not touch this)
   el.cyBox.addEventListener('wheel', () => setAutofit(false), { passive: true });
@@ -5927,6 +5933,17 @@ function addReviewMember(id){
   }
   syncReviewBtn();
 }
+function removeReviewMember(id){
+  if (state.reviewSet.has(id)){
+    state.reviewSet.delete(id);
+    const c = state.cards[id]; if (c) c.classList.remove('picked');
+    PG.action('review_remove', { node: id, size: state.reviewSet.size });
+  }
+  syncReviewBtn();
+}
+function toggleReviewMember(id){   // left-click in review mode: add if absent, remove if picked
+  if (state.reviewSet.has(id)) removeReviewMember(id); else addReviewMember(id);
+}
 function clearReview(){
   state.reviewSet.forEach((id) => { const c = state.cards[id]; if (c) c.classList.remove('picked'); });
   state.reviewSet.clear();
@@ -5941,11 +5958,14 @@ function syncPicked(){   // renderGraph rebuilds state.cards each draw (live pol
   });
   syncReviewBtn();
 }
-function addLineageToReview(id){                 // right-click a node -> add it + its UPSTREAM cone
-  const n = cy && cy.$id(id);
-  if (!n || n.empty()) return;
-  n.union(n.predecessors('node')).forEach((node) => addReviewMember(node.id()));
-  PG.action('review_add_lineage', { node: id, size: state.reviewSet.size });
+function toggleLineageInReview(id){   // right-click a node -> toggle it + its UPSTREAM cone (add a
+  const n = cy && cy.$id(id);         // branch, or SUBTRACT one you grabbed — e.g. right-click a trunk
+  if (!n || n.empty()) return;        // node you already picked to drop it and everything feeding it).
+  const removing = state.reviewSet.has(id);   // clicked node already picked -> this gesture SUBTRACTS
+  n.union(n.predecessors('node')).forEach((node) => {
+    if (removing) removeReviewMember(node.id()); else addReviewMember(node.id());
+  });
+  PG.action(removing ? 'review_remove_lineage' : 'review_add_lineage', { node: id, size: state.reviewSet.size });
 }
 function reviewSeeds(){
   const seeds = [];
@@ -5971,7 +5991,10 @@ function flash(btn, msg){                        // transient label; restores th
   btn.textContent = msg;
   btn._flashT = setTimeout(() => { btn.textContent = btn._label; btn._flashT = null; }, 1400);
 }
-function copyReviewPrompt(){
+// Two hand-off modes: 'selection' (review_selection — EXACTLY the picked nodes, induced structure,
+// verdicts from the full-project audit so they match the cockpit) and 'subgraph' (review_subgraph —
+// auto-expand each pick to its whole upstream cone). Same picked set + version-id seeds; different fn.
+function copyReviewPrompt(mode){
   const cp = $('#btn-review-copy');
   const seeds = reviewSeeds();
   if (!seeds.length){ flash(cp, 'nothing to copy'); return; }   // enabled-but-empty: say so, never a silent no-op
@@ -5980,24 +6003,78 @@ function copyReviewPrompt(){
     const n = state.graph && state.graph.nodes.find((x) => x.id === id);
     if (n) names.push(String(n.label).replace(/[\r\n]+/g, ' '));   // strip newlines — this text is fed to an agent
   });
+  const call = mode === 'subgraph'
+    ? 'review_subgraph(' + JSON.stringify(seeds) + ', scope="upstream")'
+    : 'review_selection(' + JSON.stringify(seeds) + ')';
   const p =
     "Use the provenance-gate DRAFT skill (draft skills don't auto-load). In the control-plane/repl kernel:\n"
     + "  src = host.skills.read('provenance-gate','kernel.py')['content']; exec(src, globals())\n"
     + "Then call:\n"
-    + '  review_subgraph(' + JSON.stringify(seeds) + ', scope="upstream")\n'
+    + '  ' + call + '\n'
     + 'and assess whether these results rest on coherent, current inputs; flag any silent version conflict or stale dependency.\n'
     + '# selected: ' + names.join(', ');
   const ok = copyText(p);
-  PG.action('review_copy', { seeds: seeds.length, ok: ok });
+  PG.action('review_copy', { seeds: seeds.length, mode: mode, ok: ok });
   flash(cp, ok ? 'Copied ✓' : 'Copy failed — try again');
+}
+// The "Review →" hand-off menu: a tiny popup so one button offers both modes without a second control.
+function hideReviewMenu(){
+  const m = document.getElementById('review-menu'); if (m) m.style.display = 'none';
+  window.removeEventListener('pointerdown', reviewMenuOutside, true);
+}
+function reviewMenuOutside(e){
+  const m = document.getElementById('review-menu');
+  if (m && !m.contains(e.target) && e.target.id !== 'btn-review-copy') hideReviewMenu();
+}
+function reviewMenu(){
+  let m = document.getElementById('review-menu');
+  if (m) return m;
+  m = document.createElement('div');
+  m.id = 'review-menu';
+  m.style.cssText = 'position:fixed;z-index:10000;display:none;background:var(--surface,#fff);'
+    + 'border:1px solid var(--border,#d0d0d0);border-radius:9px;box-shadow:0 8px 28px rgba(0,0,0,.22);'
+    + 'padding:5px;min-width:210px;font:13px system-ui,sans-serif';
+  m.innerHTML =
+    '<button data-mode="selection" class="rm-item">Selected only<span class="rm-sub">the picked nodes as drawn · induced</span></button>'
+    + '<button data-mode="subgraph" class="rm-item">Full cones<span class="rm-sub">full upstream of each pick · whole graph, not just drawn</span></button>';
+  m.querySelectorAll('.rm-item').forEach((b) => {
+    b.style.cssText = 'display:block;width:100%;text-align:left;padding:8px 11px;border:0;background:transparent;'
+      + 'border-radius:6px;cursor:pointer;color:var(--ink,#111);font-weight:600';
+    b.querySelector('.rm-sub').style.cssText = 'display:block;font-size:11px;font-weight:400;opacity:.6;margin-top:1px';
+    b.addEventListener('mouseenter', () => { b.style.background = 'var(--accent-soft,#eef)'; });
+    b.addEventListener('mouseleave', () => { b.style.background = 'transparent'; });
+    b.addEventListener('click', () => { hideReviewMenu(); copyReviewPrompt(b.getAttribute('data-mode')); });
+  });
+  document.body.appendChild(m);
+  return m;
+}
+function showReviewMenu(){
+  const cp = $('#btn-review-copy'); if (!cp) return;
+  if (!reviewSeeds().length){ flash(cp, 'nothing to copy'); return; }
+  const m = reviewMenu();
+  if (m.style.display === 'block'){ hideReviewMenu(); return; }   // second click closes (toggle)
+  const r = cp.getBoundingClientRect();
+  m.style.left = Math.max(8, Math.min(window.innerWidth - 220, r.left)) + 'px';
+  m.style.display = 'block';                                      // show first so we can measure it
+  const mh = m.offsetHeight;
+  // the button lives in the bottom HUD, so open UPWARD when a downward menu would overflow the viewport
+  const top = (r.bottom + 6 + mh > window.innerHeight - 8) ? (r.top - mh - 6) : (r.bottom + 6);
+  m.style.top = Math.max(8, top) + 'px';
+  setTimeout(() => window.addEventListener('pointerdown', reviewMenuOutside, true), 0);
 }
 // Bind defensively: these controls live in the freshly-baked template, but this app.js is a
 // SAVED-ONCE artifact. If a stale saved app.js ever meets a differently-versioned template, a
 // missing button must degrade to an inert control — never crash the cockpit on a null addEventListener.
 const bindReview = (sel, fn) => { const e = $(sel); if (e) e.addEventListener('click', fn); };
-bindReview('#btn-review', () => { state.reviewMode = !state.reviewMode; PG.action('review_mode', { on: state.reviewMode }); syncReviewBtn(); });
-bindReview('#btn-review-copy', () => copyReviewPrompt());
-bindReview('#btn-review-clear', () => clearReview());
+bindReview('#btn-review', () => {
+  state.reviewMode = !state.reviewMode;
+  if (cy) cy.boxSelectionEnabled(state.reviewMode);   // shift-drag box-select only while composing a review
+  if (!state.reviewMode) hideReviewMenu();
+  PG.action('review_mode', { on: state.reviewMode });
+  syncReviewBtn();
+});
+bindReview('#btn-review-copy', () => showReviewMenu());
+bindReview('#btn-review-clear', () => { hideReviewMenu(); clearReview(); });
 bindReview('#insp-add-review', () => addReviewMember(state.selected));   // regular mode: fold the selected node in
 // right-click on the graph is ours (add-lineage), not the browser menu — el.viewport covers both the
 // cy canvas and the HTML node overlay, so it fires wherever the node hit lands.
