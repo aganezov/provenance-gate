@@ -6,6 +6,7 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import PurePath
 from types import MappingProxyType
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -57,6 +58,8 @@ _MAX_APPROVAL_CARDS = 8
 _MAX_ENABLED_SKILLS = 256
 _MAX_TURN_TEXT_BYTES = 16_384
 _MAX_PROMPT_BYTES = 65_536
+_MAX_PROJECT_NAME_BYTES = 640
+_MAX_SOURCE_PATH_BYTES = 4_096
 _CREDENTIAL_KEYS = frozenset(
     {"authorization", "cookie", "credential", "credentials", "password", "secret", "token"}
 )
@@ -138,6 +141,27 @@ def make_request(
     if operation in {"session.attach", "session.inspect", "session.detach"} and body:
         raise BrowserProtocolError(f"{operation} payload must be empty")
     if operation in {"project.inspect", "agent_context.inspect"}:
+        _exact_keys(body, {"project_id"}, set(), "payload")
+        _identifier(body["project_id"], "payload.project_id")
+    if operation == "project.create":
+        _exact_keys(body, {"name"}, set(), "payload")
+        name = _bounded_text(body["name"], _MAX_PROJECT_NAME_BYTES, "payload.name")
+        if len(name) > 160 or name.strip() != name:
+            raise BrowserProtocolError("payload.name is invalid")
+    if operation == "attachment.upload":
+        _exact_keys(body, {"project_id", "chat_id", "source_path"}, set(), "payload")
+        _identifier(body["project_id"], "payload.project_id")
+        _identifier(body["chat_id"], "payload.chat_id")
+        source_path = _bounded_text(
+            body["source_path"], _MAX_SOURCE_PATH_BYTES, "payload.source_path"
+        )
+        if (
+            not PurePath(source_path).is_absolute()
+            or "\0" in source_path
+            or source_path.endswith("/")
+        ):
+            raise BrowserProtocolError("payload.source_path must be an absolute file path")
+    if operation == "chat.new":
         _exact_keys(body, {"project_id"}, set(), "payload")
         _identifier(body["project_id"], "payload.project_id")
     if operation == "chat.inspect":
@@ -269,11 +293,40 @@ def _validate_operation_result(
         if not isinstance(result["detached"], bool):
             raise BrowserProtocolError("response.result.detached must be boolean")
         return
-    if operation == "project.inspect":
+    if operation in {"project.inspect", "project.create"}:
         _validate_project_observation(result)
         return
-    if operation == "chat.inspect":
+    if operation in {"chat.inspect", "chat.new"}:
         _validate_chat_observation(result)
+        if operation == "chat.new" and (
+            result["project_id"] != request_payload["project_id"]
+            or result["root_frame_id"] is not None
+            or result["response_control_id"] is not None
+            or result["user_turn_count"] != 0
+            or result["composer_empty"] is not True
+            or result["transcript"]
+            or result["current_turn_state"] != "indeterminate"
+            or result["approval_cards"]
+        ):
+            raise BrowserProtocolError("New chat result is not a verified blank chat")
+        return
+    if operation == "attachment.upload":
+        _exact_keys(
+            result,
+            {"project_id", "chat_id", "filename", "accepted"},
+            set(),
+            "response.result",
+        )
+        _identifier(result["project_id"], "response.result.project_id")
+        _identifier(result["chat_id"], "response.result.chat_id")
+        _bounded_text(result["filename"], 1_024, "response.result.filename")
+        if (
+            result["project_id"] != request_payload["project_id"]
+            or result["chat_id"] != request_payload["chat_id"]
+            or result["filename"] != PurePath(request_payload["source_path"]).name
+            or result["accepted"] is not True
+        ):
+            raise BrowserProtocolError("Attachment result does not correlate to its request")
         return
     if operation == "agent_context.inspect":
         _validate_context_observation(result)

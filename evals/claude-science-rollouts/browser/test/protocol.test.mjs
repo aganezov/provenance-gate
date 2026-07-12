@@ -232,6 +232,71 @@ test("G3b requests enforce root modes, hashes, continuations, and decisions", ()
   }))));
 });
 
+test("G3c setup requests and results are exact and path-safe", () => {
+  const create = parseRequestText(JSON.stringify(request({
+    operation: "project.create",
+    payload: { name: "PBMC bare replicate" },
+  })));
+  assert.doesNotThrow(() => completedResponse(create, {
+    project_id: "project-created",
+    verified: true,
+    composer_empty: true,
+    user_turn_count: 0,
+    root_frame_id: null,
+    root_state: null,
+  }, 10));
+
+  const freshChat = parseRequestText(JSON.stringify(request({
+    operation: "chat.new",
+    payload: { project_id: "project-created" },
+  })));
+  const blank = chatObservation({
+    project_id: "project-created",
+    chat_id: "chat-created",
+    transcript: [],
+    user_turn_count: 0,
+    root_frame_id: null,
+    response_control_id: null,
+    current_turn_state: "indeterminate",
+  });
+  assert.doesNotThrow(() => completedResponse(freshChat, blank, 10));
+  assert.throws(
+    () => completedResponse(freshChat, { ...blank, user_turn_count: 1 }, 10),
+    (error) => error instanceof BoundaryError && error.code === "INVALID_RESPONSE",
+  );
+
+  const upload = parseRequestText(JSON.stringify(request({
+    operation: "attachment.upload",
+    payload: {
+      project_id: "project-created",
+      chat_id: "chat-created",
+      source_path: "/private/tmp/pbmc_tiny_seed.csv",
+    },
+  })));
+  const accepted = {
+    project_id: "project-created",
+    chat_id: "chat-created",
+    filename: "pbmc_tiny_seed.csv",
+    accepted: true,
+  };
+  assert.deepEqual(completedResponse(upload, accepted, 10).result, accepted);
+  assert.throws(
+    () => parseRequestText(JSON.stringify(request({
+      operation: "attachment.upload",
+      payload: {
+        project_id: "project-created",
+        chat_id: "chat-created",
+        source_path: "relative.csv",
+      },
+    }))),
+    (error) => error instanceof BoundaryError && error.code === "INVALID_TEXT",
+  );
+  assert.throws(
+    () => completedResponse(upload, { ...accepted, source_path: "/private/tmp/file" }, 10),
+    (error) => error instanceof BoundaryError && error.code === "INVALID_FIELDS",
+  );
+});
+
 test("G3b turn results distinguish continuation from settlement", () => {
   const parsed = parseRequestText(JSON.stringify(request({
     operation: "turn.wait",

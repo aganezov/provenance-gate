@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -6,6 +9,9 @@ import {
   createDefaultHandlers,
   createChatInspectHandler,
   createContextInspectHandler,
+  createAttachmentUploadHandler,
+  createNewChatHandler,
+  createProjectCreateHandler,
   createProjectInspectHandler,
   createResolveApprovalHandler,
   createSessionAttachHandler,
@@ -504,6 +510,172 @@ test("G3a observation handlers reject malformed and non-object CLI output", asyn
       handler({ project_id: "project-001" }, context),
       (error) => error instanceof BoundaryError && error.code === "CLI_INVALID_OUTPUT",
     );
+  }
+});
+
+test("project creation returns only a verified fresh project", async () => {
+  let source;
+  const handler = createProjectCreateHandler({
+    async runCommand(args) {
+      source = args[3];
+      return JSON.stringify({
+        _origin: context.session.origin,
+        _mutation_attempted: true,
+        result: {
+          project_id: "project-created",
+          verified: true,
+          composer_empty: true,
+          user_turn_count: 0,
+          root_frame_id: null,
+          root_state: null,
+        },
+      });
+    },
+  });
+  const result = await handler({ name: "PBMC bare replicate" }, context);
+  assert.equal(result.project_id, "project-created");
+  assert.equal(result.user_turn_count, 0);
+  assert.match(source, /New project/);
+  assert.equal(source.match(/await create\.click\(\)/g)?.length, 1);
+});
+
+test("new chat returns a verified rootless blank chat", async () => {
+  const handler = createNewChatHandler({
+    async runCommand() {
+      return JSON.stringify({
+        _origin: context.session.origin,
+        _mutation_attempted: false,
+        result: {
+          project_id: "project-created",
+          chat_id: "chat-created",
+          transcript: [],
+          user_turn_count: 0,
+          composer_empty: true,
+          root_frame_id: null,
+          response_control_id: null,
+          current_turn_state: "indeterminate",
+          approval_cards: [],
+        },
+      });
+    },
+  });
+  const result = await handler({ project_id: "project-created" }, context);
+  assert.equal(result.chat_id, "chat-created");
+  assert.equal(result.root_frame_id, null);
+});
+
+test("attachment upload keeps the source path request-only", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "browser-g3c-"));
+  const sourcePath = join(directory, "pbmc_tiny_seed.csv");
+  writeFileSync(sourcePath, "cell_id,value\nC001,1\n");
+  const invocations = [];
+  let runCodeCalls = 0;
+  const handler = createAttachmentUploadHandler({
+    async runCommand(args) {
+      invocations.push(args);
+      if (args[2] === "upload") return "uploaded";
+      runCodeCalls += 1;
+      if (runCodeCalls === 1) {
+        return JSON.stringify({
+          _origin: context.session.origin,
+          result: { ready: true },
+        });
+      }
+      return JSON.stringify({
+        _origin: context.session.origin,
+        result: {
+          project_id: "project-created",
+          chat_id: "chat-created",
+          filename: "pbmc_tiny_seed.csv",
+          accepted: true,
+        },
+      });
+    },
+  });
+  try {
+    const result = await handler({
+      project_id: "project-created",
+      chat_id: "chat-created",
+      source_path: sourcePath,
+    }, context);
+    assert.deepEqual(result, {
+      project_id: "project-created",
+      chat_id: "chat-created",
+      filename: "pbmc_tiny_seed.csv",
+      accepted: true,
+    });
+    assert.deepEqual(invocations[1], [
+      "--raw",
+      "-s=session-001",
+      "upload",
+      sourcePath,
+    ]);
+    assert.doesNotMatch(invocations[0][3], new RegExp(sourcePath));
+    assert.doesNotMatch(invocations[2][3], new RegExp(sourcePath));
+    assert.doesNotMatch(JSON.stringify(result), new RegExp(sourcePath));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("attachment upload rejects an unavailable source before browser use", async () => {
+  let invoked = false;
+  const handler = createAttachmentUploadHandler({
+    async runCommand() {
+      invoked = true;
+    },
+  });
+  await assert.rejects(
+    handler({
+      project_id: "project-created",
+      chat_id: "chat-created",
+      source_path: "/private/tmp/missing-pbmc-seed.csv",
+    }, context),
+    (error) =>
+      error instanceof BoundaryError &&
+      error.code === "ATTACHMENT_SOURCE_INVALID" &&
+      !error.message.includes("missing-pbmc-seed"),
+  );
+  assert.equal(invoked, false);
+});
+
+test("attachment verification failure after upload is unknown and never replayed", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "browser-g3c-unknown-"));
+  const sourcePath = join(directory, "pbmc_tiny_seed.csv");
+  writeFileSync(sourcePath, "cell_id,value\nC001,1\n");
+  const invocations = [];
+  let runCodeCalls = 0;
+  const handler = createAttachmentUploadHandler({
+    async runCommand(args) {
+      invocations.push(args);
+      if (args[2] === "upload") return "uploaded";
+      runCodeCalls += 1;
+      return JSON.stringify(
+        runCodeCalls === 1
+          ? { _origin: context.session.origin, result: { ready: true } }
+          : {
+              _origin: context.session.origin,
+              _boundary_error: "ATTACHMENT_NOT_VERIFIED",
+            },
+      );
+    },
+  });
+  try {
+    await assert.rejects(
+      handler({
+        project_id: "project-created",
+        chat_id: "chat-created",
+        source_path: sourcePath,
+      }, context),
+      (error) =>
+        error instanceof BoundaryError &&
+        error.code === "UPLOAD_OUTCOME_UNKNOWN" &&
+        error.outcome === "unknown_outcome" &&
+        error.retryable === false,
+    );
+    assert.equal(invocations.filter((args) => args[2] === "upload").length, 1);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 

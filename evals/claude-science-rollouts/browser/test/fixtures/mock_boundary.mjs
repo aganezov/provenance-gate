@@ -35,6 +35,31 @@ const handlers = {
     root_frame_id: "root-001",
     root_state: "completed",
   }),
+  "project.create": async () => ({
+    project_id: "project-created",
+    verified: true,
+    composer_empty: true,
+    user_turn_count: 0,
+    root_frame_id: null,
+    root_state: null,
+  }),
+  "attachment.upload": async (payload) => ({
+    project_id: payload.project_id,
+    chat_id: payload.chat_id,
+    filename: payload.source_path.split("/").at(-1),
+    accepted: true,
+  }),
+  "chat.new": async (payload) => ({
+    project_id: payload.project_id,
+    chat_id: "chat-created",
+    transcript: [],
+    user_turn_count: 0,
+    composer_empty: true,
+    root_frame_id: null,
+    response_control_id: null,
+    current_turn_state: "indeterminate",
+    approval_cards: [],
+  }),
   "chat.inspect": async (payload) => ({
     project_id: payload.project_id,
     chat_id: payload.chat_id,
@@ -58,7 +83,7 @@ const handlers = {
   }),
   "agent_context.inspect": async (payload) => ({
     project_id: payload.project_id,
-    enabled_skills: ["Audit skill"],
+    enabled_skills: [],
     context_hash: "a".repeat(64),
   }),
   "turn.submit_wait": async (payload) => {

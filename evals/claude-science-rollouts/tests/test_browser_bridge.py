@@ -11,6 +11,7 @@ import pytest
 from claude_science_rollouts.browser import (
     ApprovalCard,
     ApprovalResolved,
+    AttachmentAccepted,
     BrowserBridge,
     BrowserClient,
     BrowserProcessError,
@@ -307,6 +308,60 @@ def test_g3b_requests_are_exact_and_root_mode_typed() -> None:
         )
 
 
+def test_g3c_requests_are_exact_and_source_path_is_request_only() -> None:
+    create = make_request(
+        "project.create",
+        request_id="create-001",
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+        deadline_ms=20_000,
+        payload={"name": "PBMC bare replicate"},
+    )
+    assert create.payload == {"name": "PBMC bare replicate"}
+    upload = make_request(
+        "attachment.upload",
+        request_id="upload-001",
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+        deadline_ms=30_000,
+        payload={
+            "project_id": "project-created",
+            "chat_id": "chat-created",
+            "source_path": "/private/tmp/pbmc_tiny_seed.csv",
+        },
+    )
+    response = {
+        "protocol_version": 1,
+        "request_id": "upload-001",
+        "operation": "attachment.upload",
+        "outcome": "completed",
+        "elapsed_ms": 1,
+        "result": {
+            "project_id": "project-created",
+            "chat_id": "chat-created",
+            "filename": "pbmc_tiny_seed.csv",
+            "accepted": True,
+        },
+    }
+    parsed = parse_response(json.dumps(response), upload)
+    assert parsed.result is not None
+    assert "source_path" not in parsed.result
+    assert "/private/tmp" not in json.dumps(dict(parsed.result))
+    with pytest.raises(BrowserProtocolError, match="absolute"):
+        make_request(
+            "attachment.upload",
+            request_id="upload-relative",
+            session_id="session-001",
+            origin="http://127.0.0.1:8875",
+            deadline_ms=30_000,
+            payload={
+                "project_id": "project-created",
+                "chat_id": "chat-created",
+                "source_path": "pbmc_tiny_seed.csv",
+            },
+        )
+
+
 def test_typed_g3b_submit_continuation_wait_and_approval(tmp_path: Path) -> None:
     node = shutil.which("node")
     if node is None:
@@ -385,6 +440,52 @@ def test_typed_g3b_submit_continuation_wait_and_approval(tmp_path: Path) -> None
         decision="allow_for_conversation",
         verified_cleared=True,
     )
+    session.detach(request_id="detach-001")
+
+
+def test_typed_g3c_setup_obeys_empty_enabled_skill_preflight(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is not installed")
+    client = BrowserClient(
+        bridge=BrowserBridge((node, str(MOCK_BOUNDARY)), cwd=tmp_path),
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+    )
+    session = BrowserSession(client)
+    session.attach(request_id="attach-001")
+
+    created = session.create_project("PBMC bare replicate", request_id="create-001")
+    assert created.observation == ProjectObservation(
+        project_id="project-created",
+        verified=True,
+        composer_empty=True,
+        user_turn_count=0,
+        root_frame_id=None,
+        root_state=None,
+    )
+    context = session.inspect_context("project-created", request_id="preflight-001")
+    assert context.observation is not None
+    assert context.observation.enabled_skills == frozenset()
+
+    chat = session.new_chat("project-created", request_id="chat-new-001")
+    assert chat.observation is not None
+    assert chat.observation.chat_id == "chat-created"
+    assert chat.observation.root_frame_id is None
+    source_path = str((tmp_path / "pbmc_tiny_seed.csv").resolve())
+    uploaded = session.upload_attachment(
+        "project-created",
+        "chat-created",
+        source_path,
+        request_id="upload-001",
+    )
+    assert uploaded.result == AttachmentAccepted(
+        project_id="project-created",
+        chat_id="chat-created",
+        filename="pbmc_tiny_seed.csv",
+        accepted=True,
+    )
+    assert source_path not in repr(uploaded.result)
     session.detach(request_id="detach-001")
 
 
@@ -521,7 +622,7 @@ def test_typed_g3a_observations_cross_python_node_boundary(tmp_path: Path) -> No
     context = session.inspect_context("project-001", request_id="context-001")
     assert context.observation == ContextObservation(
         project_id="project-001",
-        enabled_skills=frozenset({"Audit skill"}),
+        enabled_skills=frozenset(),
         context_hash="a" * 64,
     )
     assert ApprovalCard("card-001", "b" * 64, "Permission", "approval").kind == "approval"

@@ -104,6 +104,14 @@ class ContextObservation:
 
 
 @dataclass(frozen=True)
+class AttachmentAccepted:
+    project_id: str
+    chat_id: str
+    filename: str
+    accepted: bool
+
+
+@dataclass(frozen=True)
 class DeliveryProof:
     root_frame_id: str
     authored_prompt_sha256: str
@@ -315,6 +323,60 @@ class BrowserClient:
             request_id=request_id,
             deadline_ms=deadline_ms,
             parser=_context_observation,
+        )
+
+    def create_project(
+        self,
+        name: str,
+        *,
+        request_id: str,
+        deadline_ms: int = 20_000,
+    ) -> BrowserObservationOutcome[ProjectObservation]:
+        """Create one project and verify its fresh rootless state."""
+        return self._observation_operation(
+            "project.create",
+            payload={"name": name},
+            request_id=request_id,
+            deadline_ms=deadline_ms,
+            parser=_project_observation,
+        )
+
+    def new_chat(
+        self,
+        project_id: str,
+        *,
+        request_id: str,
+        deadline_ms: int = 15_000,
+    ) -> BrowserObservationOutcome[ChatObservation]:
+        """Return a verified blank chat, creating one only when necessary."""
+        return self._observation_operation(
+            "chat.new",
+            payload={"project_id": project_id},
+            request_id=request_id,
+            deadline_ms=deadline_ms,
+            parser=_chat_observation,
+        )
+
+    def upload_attachment(
+        self,
+        project_id: str,
+        chat_id: str,
+        source_path: str,
+        *,
+        request_id: str,
+        deadline_ms: int = 30_000,
+    ) -> BrowserOperationOutcome[AttachmentAccepted]:
+        """Upload one local file and return only its accepted basename."""
+        return self._typed_operation(
+            "attachment.upload",
+            payload={
+                "project_id": project_id,
+                "chat_id": chat_id,
+                "source_path": source_path,
+            },
+            request_id=request_id,
+            deadline_ms=deadline_ms,
+            parser=_attachment_accepted,
         )
 
     def submit_turn_wait(
@@ -594,6 +656,52 @@ class BrowserSession:
             deadline_ms=deadline_ms,
         )
 
+    def create_project(
+        self,
+        name: str,
+        *,
+        request_id: str,
+        deadline_ms: int = 20_000,
+    ) -> BrowserObservationOutcome[ProjectObservation]:
+        self._require_attached()
+        return self.client.create_project(
+            name,
+            request_id=request_id,
+            deadline_ms=deadline_ms,
+        )
+
+    def new_chat(
+        self,
+        project_id: str,
+        *,
+        request_id: str,
+        deadline_ms: int = 15_000,
+    ) -> BrowserObservationOutcome[ChatObservation]:
+        self._require_attached()
+        return self.client.new_chat(
+            project_id,
+            request_id=request_id,
+            deadline_ms=deadline_ms,
+        )
+
+    def upload_attachment(
+        self,
+        project_id: str,
+        chat_id: str,
+        source_path: str,
+        *,
+        request_id: str,
+        deadline_ms: int = 30_000,
+    ) -> BrowserOperationOutcome[AttachmentAccepted]:
+        self._require_attached()
+        return self.client.upload_attachment(
+            project_id,
+            chat_id,
+            source_path,
+            request_id=request_id,
+            deadline_ms=deadline_ms,
+        )
+
     def submit_turn_wait(
         self,
         project_id: str,
@@ -713,6 +821,15 @@ def _context_observation(result: Mapping[str, Any]) -> ContextObservation:
         project_id=result["project_id"],
         enabled_skills=frozenset(result["enabled_skills"]),
         context_hash=result["context_hash"],
+    )
+
+
+def _attachment_accepted(result: Mapping[str, Any]) -> AttachmentAccepted:
+    return AttachmentAccepted(
+        project_id=result["project_id"],
+        chat_id=result["chat_id"],
+        filename=result["filename"],
+        accepted=result["accepted"],
     )
 
 

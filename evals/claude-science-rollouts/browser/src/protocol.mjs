@@ -32,6 +32,8 @@ const MAX_APPROVAL_CARDS = 8;
 const MAX_ENABLED_SKILLS = 256;
 const MAX_TURN_TEXT_BYTES = 16384;
 const MAX_PROMPT_BYTES = 65536;
+const MAX_PROJECT_NAME_BYTES = 640;
+const MAX_SOURCE_PATH_BYTES = 4096;
 const CREDENTIAL_KEYS = new Set([
   "authorization",
   "cookie",
@@ -116,6 +118,48 @@ export function validateRequest(value) {
     exactKeys(request.payload, [], "request.payload");
   }
   if (["project.inspect", "agent_context.inspect"].includes(request.operation)) {
+    exactKeys(request.payload, ["project_id"], "request.payload");
+    identifier(request.payload.project_id, "request.payload.project_id");
+  }
+  if (request.operation === "project.create") {
+    exactKeys(request.payload, ["name"], "request.payload");
+    boundedText(
+      request.payload.name,
+      MAX_PROJECT_NAME_BYTES,
+      "request.payload.name",
+    );
+    if (
+      request.payload.name.length > 160 ||
+      request.payload.name.trim() !== request.payload.name
+    ) {
+      throw new BoundaryError("INVALID_TEXT", "request.payload.name is invalid");
+    }
+  }
+  if (request.operation === "attachment.upload") {
+    exactKeys(
+      request.payload,
+      ["project_id", "chat_id", "source_path"],
+      "request.payload",
+    );
+    identifier(request.payload.project_id, "request.payload.project_id");
+    identifier(request.payload.chat_id, "request.payload.chat_id");
+    boundedText(
+      request.payload.source_path,
+      MAX_SOURCE_PATH_BYTES,
+      "request.payload.source_path",
+    );
+    if (
+      !request.payload.source_path.startsWith("/") ||
+      request.payload.source_path.includes("\0") ||
+      request.payload.source_path.endsWith("/")
+    ) {
+      throw new BoundaryError(
+        "INVALID_TEXT",
+        "request.payload.source_path must be an absolute file path",
+      );
+    }
+  }
+  if (request.operation === "chat.new") {
     exactKeys(request.payload, ["project_id"], "request.payload");
     identifier(request.payload.project_id, "request.payload.project_id");
   }
@@ -252,12 +296,51 @@ function validateOperationResult(operation, result, requestPayload) {
     boolean(result.detached, "response.result.detached");
     return;
   }
-  if (operation === "project.inspect") {
+  if (["project.inspect", "project.create"].includes(operation)) {
     validateProjectObservation(result);
     return;
   }
-  if (operation === "chat.inspect") {
+  if (["chat.inspect", "chat.new"].includes(operation)) {
     validateChatObservation(result);
+    if (operation === "chat.new") {
+      if (
+        result.project_id !== requestPayload.project_id ||
+        result.root_frame_id !== null ||
+        result.response_control_id !== null ||
+        result.user_turn_count !== 0 ||
+        result.composer_empty !== true ||
+        result.transcript.length !== 0 ||
+        result.current_turn_state !== "indeterminate" ||
+        result.approval_cards.length !== 0
+      ) {
+        throw new BoundaryError(
+          "INVALID_RESPONSE",
+          "New chat result is not a verified blank chat",
+        );
+      }
+    }
+    return;
+  }
+  if (operation === "attachment.upload") {
+    exactKeys(
+      result,
+      ["project_id", "chat_id", "filename", "accepted"],
+      "response.result",
+    );
+    identifier(result.project_id, "response.result.project_id");
+    identifier(result.chat_id, "response.result.chat_id");
+    boundedText(result.filename, 1024, "response.result.filename");
+    if (
+      result.project_id !== requestPayload.project_id ||
+      result.chat_id !== requestPayload.chat_id ||
+      result.filename !== requestPayload.source_path.split("/").at(-1) ||
+      result.accepted !== true
+    ) {
+      throw new BoundaryError(
+        "INVALID_RESPONSE",
+        "Attachment result does not correlate to its request",
+      );
+    }
     return;
   }
   if (operation === "agent_context.inspect") {
