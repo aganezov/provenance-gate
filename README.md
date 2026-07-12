@@ -43,7 +43,10 @@ conflict trace. You pick nodes by clicking, and "Review →" copies a `review_se
 that you paste to the agent, which runs the brief and reasons over it. The rendered page can't call
 the agent itself, so the paste is the bridge.
 
-> _Cockpit screenshot to come._
+![The Provenance Gate cockpit inside Claude Science, with cell 7 flagged version_mix and its lineage reconverging on cells.qc.csv at v1 and v2](docs/img/cockpit-version-mix.png)
+
+*The cockpit, rendered by the agent as a read-only artifact inside Claude Science. Cell 7 is flagged
+`version_mix`; the panel names the conflict: `cells.qc.csv` reached at both v1 and v2.*
 
 ## How it's built
 
