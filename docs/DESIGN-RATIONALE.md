@@ -12,8 +12,8 @@ That is deliberate. A computed verdict doesn't depend on a model reading its own
 
 It is not a correctness checker, not a faithfulness checker (content vs. hash), not a linter, and not
 an agent. It says nothing about whether an analysis is right, only whether it was built on current,
-consistent inputs. It can miss a conflict that lives in the provenance rather than the text, but how
-often that matters is an empirical question we haven't measured (§5).
+consistent inputs. How often it catches a problem a reviewer would otherwise have missed, and how
+often that turns out to matter, is an empirical question we haven't measured (§5).
 
 ### Scope: the deterministic slice of a larger design
 
@@ -48,7 +48,7 @@ covers what more access would open up.
 | # | We assume | Because | If it's wrong |
 |---|---|---|---|
 | A1 | The provenance is a DAG. | Artifacts are immutable versions; a version only depends on ones that already existed. | A cycle can't happen in real data. If one did, the audit degrades to a per-node best effort instead of crashing. |
-| A2 | CS is read-only to us. | We only issue reads. | We never call a write path. |
+| A2 | CS is read-only to us. | We only issue reads. | Enforced by construction: the gate has no write path to call. |
 | A3 | A cell is an agent turn: it reads its inputs, reasons over them, and writes outputs. | That is what a CS cell is. | Underlies D3. |
 | A4 | Staleness is decidable from one row. | Each version row carries its artifact's current head, so currency is known on read. | Structural. |
 | A5 | Version ids are stable and unique, and the head is authoritative. | CS ids are stable. | Naming degrades gracefully (D8); a real mix is still flagged. |

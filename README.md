@@ -16,7 +16,7 @@ go on, because the conflict is in the provenance, not the prose.
 The gate reads the CS provenance DAG and computes two verdicts for each computation cell:
 
 - `stale_input` — the cell read a version of some artifact that is no longer current.
-- `version_mix` — the cell's lineage pulls in two live versions of the same artifact.
+- `version_mix` — the cell's consumed lineage reaches two live versions of the same artifact.
 
 Both are structural facts about the graph. No model decides them, so they aren't something an agent
 can talk its way past. Green here doesn't mean the analysis is correct; it means the analysis rests on

@@ -11,12 +11,16 @@ forces now and what it would unlock.
 
 | Limit | What it forces now | What lifting it opens |
 |---|---|---|
-| The cockpit page can't call the skill or the agent. The LLM is already in the loop (it's the agent, which runs the skill and reasons over the briefs); `host.llm` is there for a separate in-skill call, but we route through the agent since it's an LLM. | The hand-off from cockpit to agent is a copy-paste. | Let the page call the skill: click a fork, the agent gets the brief and reasons, no person in the middle. This is wiring, not model access. |
+| The cockpit page can't call the skill or the agent. | The hand-off from cockpit to agent is a copy-paste. | Let the page call the skill: click a fork, the agent gets the brief and reasons, no person in the middle. This is wiring, not model access. |
 | No writable overlay store (storage and write limits) | Stateless deterministic checks only; nothing persists between runs | The human-owned layer: assumptions, surfaced-value links, version-stamped confirmations, and the full four-colour verdict. Recurring attestations could graduate into new deterministic checks over time. |
 | No persistent UI tile in-CS. A tile seems possible but is gated to trusted vendors right now, and its capabilities are unverified. | The in-CS cockpit is a re-rendered snapshot (it's already live in the server setup). | A live cockpit inside CS, updating as the agent works. Snapshots become optional, kept only when you want a frozen record. |
 | No stateful agent annotations | Every helper is a pure function | The agent can leave marks (reviewed, waived, owned) and carry trust state across a session. |
 | Shallow, cell-granular dependency capture | A conservative over-approximation on inputs; comparability sites can't be detected automatically | Precise per-output lineage, and automatic detection of shared-root-processed-differently joins, so nobody has to spot the fork by eye. |
 | The skill runs as a draft, not published | Human-invoked, or agent-invoked with a draft-activation phrase | The autonomous trigger: the agent runs the pre-write check before an expensive step on its own. |
+
+On the first row: the LLM is already in the loop, because it's the agent, which runs the skill and
+reasons over the briefs. `host.llm` is there for a separate in-skill call, but we route through the
+agent. So closing that gap is wiring, not model access.
 
 ## Cheaper at scale, with a store
 
