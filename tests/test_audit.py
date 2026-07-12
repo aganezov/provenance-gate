@@ -94,6 +94,105 @@ def test_version_mix_on_divergent_branches():
     assert v["cB"].level == audit.CLEAN         # revises X, not stale
 
 
+def test_co_output_sibling_does_not_fake_a_mix():
+    # THE regression: cA produces x_a AND qc v1; cB produces x_b AND qc v2 (co-outputs). cC consumes
+    # x_a + x_b ONLY — never qc. The divergent qc are siblings of cC's ancestors, off its
+    # consumption path, so they must NOT reconverge into a version_mix at cC. (Holds whether or not
+    # qc v1->v2 are linearly related — the audit judges consumption, not co-production.)
+    xa = ref("xa", "XA", 1, 1, True, "x_a.csv")
+    xb = ref("xb", "XB", 1, 1, True, "x_b.csv")
+    qc1 = ref("qc1", "QC", 1, 2, False, "qc.csv")   # qc head is v2; v1 is non-current
+    qc2 = ref("qc2", "QC", 2, 2, True, "qc.csv")
+    cA = node("cA", outputs=[xa, qc1])              # x_a and qc v1 are SIBLING outputs of one cell
+    cB = node("cB", outputs=[xb, qc2])
+    cC = node("cC", inputs=[xa, xb], outputs=[ref("rep", "R", 1, 1, True, "report.csv")])
+    v = audit.audit_graph(Graph(cs_project_id="p", nodes=(cA, cB, cC)))
+    assert v["cC"].level == audit.CLEAN             # consumed only x_a/x_b -> no qc mix
+    assert v["cA"].level == audit.CLEAN and v["cB"].level == audit.CLEAN
+
+
+def test_two_versions_from_one_cell_do_not_fake_a_mix():
+    # a single cell writes qc v1 AND qc v2 (a revision) plus x.csv; a downstream cell
+    # reads only x.csv. The two qc versions on the surface must not reconverge into a mix
+    # for a consumer that never read qc — the per-version cone keeps each output's lineage apart.
+    # The result is independent of output_surface order (old subsumption was order-sensitive).
+    qc1 = ref("qc1", "QC", 1, 2, False, "qc.csv")
+    qc2 = ref("qc2", "QC", 2, 2, True, "qc.csv")
+    x = ref("x", "X", 1, 1, True, "x.csv")
+    c0 = node("c0", outputs=[qc1, qc2, x])
+    d = node("d", inputs=[x], outputs=[ref("y", "Y", 1, 1, True, "y.csv")])
+    v = audit.audit_graph(Graph(cs_project_id="p", nodes=(c0, d)))
+    assert v["c0"].level == audit.CLEAN and v["d"].level == audit.CLEAN
+
+
+def test_audit_inputs_ignores_co_output_siblings():
+    # the pre-write path (audit_inputs) must judge consumed lineage too: a planned node reading
+    # x_a + x_b whose producers ALSO emitted divergent qc siblings is clean: qc was never consumed.
+    xa = ref("xa", "XA", 1, 1, True, "x_a.csv")
+    xb = ref("xb", "XB", 1, 1, True, "x_b.csv")
+    cA = node("cA", outputs=[xa, ref("qc1", "QC", 1, 2, False, "qc.csv")])
+    cB = node("cB", outputs=[xb, ref("qc2", "QC", 2, 2, True, "qc.csv")])
+    g = Graph(cs_project_id="p", nodes=(cA, cB))
+    assert audit.audit_inputs(g, ["xa", "xb"]).level == audit.CLEAN
+
+
+def test_external_input_still_counts_toward_a_mix():
+    # A1: rep reads an EXTERNAL X v1 (produced by no node in the graph) plus Y (built on X v2). X
+    # reconverges at v1 (direct) and v2 (via Y); the external version must be seeded
+    # from its own ref (not dropped) AND nameable (ref_map indexes inputs too), not downgraded.
+    xv1 = ref("xv1", "X", 1, 2, False, "x.csv")   # external, non-current
+    xv2 = ref("xv2", "X", 2, 2, True, "x.csv")
+    yv1 = ref("yv1", "Y", 1, 1, True, "y.csv")
+    sx = node("s_x", outputs=[xv2], kind="source")
+    cy = node("cy", inputs=[xv2], outputs=[yv1])
+    rep = node("rep", inputs=[xv1, yv1], outputs=[ref("rp", "R", 1, 1, True, "report.csv")])
+    v = audit.audit_graph(Graph(cs_project_id="p", nodes=(sx, cy, rep)))
+    assert v["rep"].level == audit.VERSION_MIX
+    (m,) = v["rep"].mixed
+    assert m.artifact == "x.csv" and set(m.versions) == {1, 2}
+
+
+def test_mix_issue_fields_are_deterministic_not_set_order():
+    # A2: two versions of one artifact_id carrying DIFFERENT filenames (a rename) reconverge at rep.
+    # The issue's filename must be a deterministic pick (lead = min version id), not set-iteration
+    # order, so an identical graph audits identically across runs (hash-randomized set iteration).
+    a1 = ref("a_id1", "A", 1, 2, False, "a.csv")        # version id 'a_id1'
+    a2 = ref("a_id2", "A", 2, 2, True, "renamed.csv")   # same artifact_id 'A', renamed file
+    rep = node("rep", inputs=[a1, a2], outputs=[ref("rp", "R", 1, 1, True, "r.csv")])
+    v = audit.audit_graph(Graph(cs_project_id="p", nodes=(
+        node("sA1", outputs=[a1], kind="source"), node("sA2", outputs=[a2], kind="source"), rep)))
+    (m,) = v["rep"].mixed
+    assert m.artifact == "a.csv"   # 'a_id1' < 'a_id2' -> lead a1 -> 'a.csv', every run
+
+
+def test_null_version_numbers_still_flag_a_mix():
+    # A3: two distinct versions of artifact Q both with version_number=None reconverge at rep. Two
+    # distinct version ids ARE a mix regardless of numbers -- must not slip through as clean.
+    qa = ref("qa", "Q", None, None, True, "q.csv")
+    qb = ref("qb", "Q", None, None, True, "q.csv")
+    rep = node("rep", inputs=[qa, qb], outputs=[ref("rp", "R", 1, 1, True, "r.csv")])
+    v = audit.audit_graph(Graph(cs_project_id="p", nodes=(
+        node("sA", outputs=[qa], kind="source"), node("sB", outputs=[qb], kind="source"), rep)))
+    assert v["rep"].level == audit.VERSION_MIX and v["rep"].mixed[0].artifact == "q.csv"
+    assert v["rep"].mixed[0].versions == ()   # all NULL numbers -> empty versions, still flagged
+
+
+def test_revised_input_and_co_output_from_old_version_flags_downstream_mix():
+    # Finder B: cell cK revises X v1->v2 AND co-emits Y from OLD v1; a downstream reading BOTH the
+    # revised X v2 and Y (on v1) genuinely mixes X. Old per-cell subsumption returned clean (it
+    # collapsed X to v2 for ALL cK's outputs); the per-version cone keeps Y on v1 and catches it.
+    xv1 = ref("xv1", "X", 1, 2, False, "x.csv")
+    xv2 = ref("xv2", "X", 2, 2, True, "x.csv")
+    yv1 = ref("yv1", "Y", 1, 1, True, "y.csv")
+    src = node("src", outputs=[xv1], kind="source")
+    cK = node("cK", inputs=[xv1], outputs=[xv2, yv1])   # revises X to v2 AND co-emits Y from v1
+    rep = node("rep", inputs=[xv2, yv1], outputs=[ref("rp", "R", 1, 1, True, "report.csv")])
+    v = audit.audit_graph(Graph(cs_project_id="p", nodes=(src, cK, rep)))
+    assert v["rep"].level == audit.VERSION_MIX
+    (m,) = v["rep"].mixed
+    assert m.artifact == "x.csv" and set(m.versions) == {1, 2}
+
+
 def test_audit_inputs_hypothetical_planned_write():
     # audit a PLANNED node reading a.csv + b.csv before it exists — the skill's pre-write case
     src, cB, cX, cY, av1, bv1 = _divergent_nodes()
