@@ -7,9 +7,10 @@ Extra fixtures pin the two review-caught bugs (version-granular focus, NULL-file
 empty graphs, and that the ordering is real rather than an artifact of node-id order.
 """
 
-from provenance_gate.core import derive
+from provenance_gate.core import audit, derive
 from provenance_gate.core.audit import VERSION_MIX
 from provenance_gate.core.review_kit import GO_DEEPER, REVIEW_QUESTION, review_kit
+from provenance_gate.core.subgraph import induced_subgraph
 
 
 def _v(vid, aid, num, cell, fn, head=None, headnum=None, cs="cs"):
@@ -162,3 +163,33 @@ def _two_terminal_records():
 def test_focus_is_sorted_by_filename_not_node_order():
     g = derive.derive_graph("p", *_two_terminal_records(), built_at=1.0)
     assert review_kit(g)["focus"] == ["a_first.csv", "z_last.csv"]
+
+
+# ---- verdicts= override: narrow the shown structure, not the vigilance (review_selection) ----
+
+def test_verdicts_override_carries_wider_audit_into_a_subgraph():
+    # induce the version_mix graph down to JUST the terminal (c3), but pass the FULL-graph verdicts:
+    # c3 must STILL flag version_mix even though its induced input cone is empty. This lets a
+    # selective review exclude a trusted trunk without going blind to a conflict hiding in it.
+    g = derive.derive_graph("proj_x", *_mix_records(), built_at=1.0)
+    verdicts = audit.audit_graph(g)                 # c3 flagged version_mix over the whole graph
+    induced = induced_subgraph(g, {"c3"})
+    kit = review_kit(induced, "selection", verdicts=verdicts)
+    assert kit["nodes"] == 1 and kit["scope"] == "selection"
+    assert any(f["verdict"] == VERSION_MIX for f in kit["flags"])   # vigilance survived the induce
+    # load-bearing: auditing the induced graph ALONE loses the version_mix — with c3's producer cone
+    # gone it degrades to a stale_input, so the override is what carries the true full verdict.
+    assert not any(f["verdict"] == VERSION_MIX for f in review_kit(induced)["flags"])
+
+
+def test_verdicts_override_restricts_flags_to_shown_nodes():
+    # verdicts for nodes NOT in the induced graph must not leak in — only the shown node's flag
+    g = derive.derive_graph("proj_x", *_mix_records(), built_at=1.0)
+    kit = review_kit(induced_subgraph(g, {"c3"}), "selection", verdicts=audit.audit_graph(g))
+    assert {f["cell"] for f in kit["flags"]} == {"cell 3"}   # not c1/c2, though they're in verdicts
+
+
+def test_verdicts_none_audits_the_given_graph_as_before():
+    # the default path is unchanged: no verdicts -> audit the passed graph itself
+    g = derive.derive_graph("proj_x", *_mix_records(), built_at=1.0)
+    assert review_kit(g) == review_kit(g, verdicts=None)

@@ -137,6 +137,42 @@ def test_inlined_kernel_review_subgraph_unresolved(cs_conn):
     assert ns["review_subgraph"]("nonexistent.csv")["status"] == "seeds_unresolved"
 
 
+def test_inlined_kernel_review_selection(cs_conn):
+    # review_selection shows EXACTLY the picked node (induced structure), not a full cone. Selecting
+    # note.txt gives a 1-node brief (just c1); stats.csv is NOT drawn but shows as a trusted_input
+    # (what the selection consumes from outside it). Verdicts come from the full-project audit.
+    ns = _exec_kernel(_FakeHost(cs_conn))
+    kit = ns["review_selection"]("note.txt")
+    assert kit["scope"] == "selection" and kit["nodes"] == 1   # just the picked node, not the cone
+    assert kit["basis"] == "full_project_audit" and "note" in kit
+    assert "note.txt" in kit["focus"]
+    assert "stats.csv" in {t["artifact"] for t in kit["trusted_inputs"]}   # the excluded trunk dep
+    for key in ("flags", "lineage", "artifacts", "trusted_inputs"):
+        assert key in kit
+
+
+def test_review_selection_verdict_comes_from_full_graph(cs_conn):
+    # the spec: flags match the COCKPIT (full-project audit), not an audit of the induced graph.
+    # Give stats.csv a newer head v2 -> in the full audit, note.txt's cell reads a STALE stats.csv.
+    # The brief induces down to just that cell (stats.csv not drawn), but the stale_input flag rides
+    # in from the full-project audit — the "match the cockpit" guarantee.
+    cs_conn.execute("UPDATE artifacts SET latest_version_id='v_stats2' WHERE id='a_stats'")
+    cs_conn.execute("INSERT INTO execution_log VALUES('c_rev','fd041418',9,'revise stats')")
+    cs_conn.execute("INSERT INTO artifact_versions VALUES"
+                    "('v_stats2','a_stats',2,'x','p','v_stats','c_rev','fd041418')")
+    cs_conn.execute("INSERT INTO artifact_dependencies VALUES('v_stats2','v_stats','stats.csv')")
+    cs_conn.commit()
+    kit = _exec_kernel(_FakeHost(cs_conn))["review_selection"]("note.txt")
+    assert kit["nodes"] == 1 and kit["basis"] == "full_project_audit"
+    assert any(f["verdict"] == "stale_input" for f in kit["flags"])       # from the full audit
+    assert "stats.csv" in {t["artifact"] for t in kit["trusted_inputs"]}  # not drawn, flagged-via
+
+
+def test_inlined_kernel_review_selection_unresolved(cs_conn):
+    ns = _exec_kernel(_FakeHost(cs_conn))
+    assert ns["review_selection"]("nonexistent.csv")["status"] == "seeds_unresolved"
+
+
 def test_inlined_kernel_review_chat(cs_conn, tmp_path, monkeypatch):
     # review_chat resolves the current conversation from the CWD basename (= the frame id), seeds
     # from what THIS chat produced, and returns review_kit's brief. fd041418 made stats.csv ->

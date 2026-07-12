@@ -14,6 +14,8 @@ graph, then calls ``review_kit``. ``scope`` is a passthrough label for how the g
 
 from __future__ import annotations
 
+from typing import Optional
+
 from .audit import _ref_map, audit_graph, flagged_verdicts
 from .model import Graph
 
@@ -37,9 +39,14 @@ def _name(ref) -> str:
     return ref.filename or ("(unnamed " + ref.artifact_version_id[:8] + ")")
 
 
-def review_kit(graph: Graph, scope: str = "upstream") -> dict:
+def review_kit(graph: Graph, scope: str = "upstream", verdicts: Optional[dict] = None) -> dict:
     """A deterministic review brief over ``graph`` (a lineage subgraph). Returns a JSON-safe dict;
-    identical ``(graph, scope)`` produces an identical kit. Reuses ``core.audit`` for the flags."""
+    identical ``(graph, scope)`` produces an identical kit. Reuses ``core.audit`` for the flags.
+
+    ``verdicts`` lets a caller supply per-node verdicts computed over a LARGER graph (e.g. the full
+    ancestry cone) and then induce ``graph`` down to a selection: the flags then reflect that wider
+    audit, restricted to the nodes actually in ``graph`` — narrowing the shown structure without
+    narrowing the vigilance. Omit it and the flags are audited over ``graph`` itself (default)."""
     label = {n.id: n.label for n in graph.nodes}
     ref_of = _ref_map(graph)   # version_id -> ArtifactRef (the one map, shared with core.audit)
 
@@ -50,7 +57,11 @@ def review_kit(graph: Graph, scope: str = "upstream") -> dict:
     focus = sorted({_name(a) for a in ref_of.values()
                     if a.artifact_version_id not in consumed})
 
-    flags = flagged_verdicts(audit_graph(graph), label)   # shared serializer with audit_project
+    # default: audit this graph. Given verdicts (from a wider cone), restrict them to THIS graph's
+    # nodes so the flags carry the wider audit's vigilance but only for the nodes we actually show.
+    verds = (audit_graph(graph) if verdicts is None
+             else {n: v for n, v in verdicts.items() if n in label})
+    flags = flagged_verdicts(verds, label)   # shared serializer with audit_project
 
     lineage = []
     for e in graph.edges:
