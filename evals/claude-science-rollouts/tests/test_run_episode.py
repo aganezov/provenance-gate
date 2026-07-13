@@ -152,6 +152,22 @@ def test_validate_run_parameters_rejects(overrides: dict[str, object]) -> None:
         _validate_run_parameters(_params(**overrides))
 
 
+def test_observed_model_identifiers_collects_nonnull_per_turn() -> None:
+    # the summary verifies every turn ran under the pinned model, so the collector must gather each
+    # turn's non-null identifier (from a response or an input request) and ignore absent ones.
+    turns = [
+        {"persisted_response": {"root_model_identifier": "claude-opus-4-8"}},
+        {"persisted_response": {"root_model_identifier": None}, "persisted_input_request": None},
+        {"persisted_response": None,
+         "persisted_input_request": {"root_model_identifier": "claude-sonnet-5"}},
+        {"persisted_response": None, "persisted_input_request": None},
+    ]
+    assert run_episode._observed_model_identifiers(turns) == {
+        "claude-opus-4-8",
+        "claude-sonnet-5",
+    }
+
+
 # --- input validation ---------------------------------------------------------------------------
 
 

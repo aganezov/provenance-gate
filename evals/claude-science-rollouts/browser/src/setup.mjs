@@ -1,4 +1,7 @@
-import { PAGE_OBSERVATION_HELPERS_SOURCE } from "./observations.mjs";
+import {
+  ORIGIN_FROM_HTTP_URL_SOURCE,
+  PAGE_OBSERVATION_HELPERS_SOURCE,
+} from "./observations.mjs";
 
 const HELPERS = PAGE_OBSERVATION_HELPERS_SOURCE;
 const MAX_TURN_TEXT_BYTES = 16384;
@@ -6,8 +9,7 @@ const MAX_TURN_TEXT_BYTES = 16384;
 export function buildCreateProjectSource({ origin, name }) {
   return `async (page) => {
     let mutationAttempted = false;
-    const originOf = (value) =>
-      String(value).match(/^https?:[/][/][^/?#]+/)?.[0] ?? null;
+    const originFromHttpUrl = ${ORIGIN_FROM_HTTP_URL_SOURCE};
     const fail = (code) => {
       const error = new Error(code);
       error.boundaryCode = code;
@@ -15,7 +17,7 @@ export function buildCreateProjectSource({ origin, name }) {
     };
     try {
       await page.goto(${JSON.stringify(origin)});
-      if (originOf(page.url()) !== ${JSON.stringify(origin)}) {
+      if (originFromHttpUrl(page.url()) !== ${JSON.stringify(origin)}) {
         fail("NAVIGATION_DRIFT");
       }
       const newProject = page.getByRole("button", {
@@ -75,7 +77,7 @@ export function buildCreateProjectSource({ origin, name }) {
       };
     } catch (error) {
       return {
-        _origin: originOf(page.url()),
+        _origin: originFromHttpUrl(page.url()),
         _mutation_attempted: mutationAttempted,
         _boundary_error: error?.boundaryCode ?? "MALFORMED_BROWSER_STATE",
       };
@@ -86,8 +88,7 @@ export function buildCreateProjectSource({ origin, name }) {
 export function buildNewChatSource({ origin, projectId }) {
   return `async (page) => {
     let mutationAttempted = false;
-    const originOf = (value) =>
-      String(value).match(/^https?:[/][/][^/?#]+/)?.[0] ?? null;
+    const originFromHttpUrl = ${ORIGIN_FROM_HTTP_URL_SOURCE};
     const fail = (code) => {
       const error = new Error(code);
       error.boundaryCode = code;
@@ -197,7 +198,7 @@ export function buildNewChatSource({ origin, projectId }) {
       };
     } catch (error) {
       return {
-        _origin: originOf(page.url()),
+        _origin: originFromHttpUrl(page.url()),
         _mutation_attempted: mutationAttempted,
         _boundary_error: error?.boundaryCode ?? "MALFORMED_BROWSER_STATE",
       };
@@ -212,8 +213,7 @@ export function buildSetAttachmentSource({
   sourcePath,
 }) {
   return `async (page) => {
-    const originOf = (value) =>
-      String(value).match(/^https?:[/][/][^/?#]+/)?.[0] ?? null;
+    const originFromHttpUrl = ${ORIGIN_FROM_HTTP_URL_SOURCE};
     const fail = (code) => {
       const error = new Error(code);
       error.boundaryCode = code;
@@ -242,7 +242,7 @@ export function buildSetAttachmentSource({
           (Array.isArray(identity.turns) && identity.turns.length !== 0)
         ) fail("IDENTITY_MISMATCH");
         if (
-          identity.chatId !== null &&
+          identity.chatId === ${JSON.stringify(chatId)} &&
           identity.composer?.empty === true &&
           Array.isArray(identity.turns) &&
           identity.turns.length === 0
@@ -266,7 +266,7 @@ export function buildSetAttachmentSource({
         file_input: "ATTACHMENT_INPUT_UNAVAILABLE",
       }[stage];
       return {
-        _origin: originOf(page.url()),
+        _origin: originFromHttpUrl(page.url()),
         _mutation_attempted: mutationAttempted,
         _boundary_error: error?.boundaryCode ?? stageCode,
       };
@@ -276,8 +276,7 @@ export function buildSetAttachmentSource({
 
 export function buildVerifyAttachmentSource({ origin, projectId, chatId, filename }) {
   return `async (page) => {
-    const originOf = (value) =>
-      String(value).match(/^https?:[/][/][^/?#]+/)?.[0] ?? null;
+    const originFromHttpUrl = ${ORIGIN_FROM_HTTP_URL_SOURCE};
     const fail = (code) => {
       const error = new Error(code);
       error.boundaryCode = code;
@@ -327,7 +326,7 @@ export function buildVerifyAttachmentSource({ origin, projectId, chatId, filenam
       };
     } catch (error) {
       return {
-        _origin: originOf(page.url()),
+        _origin: originFromHttpUrl(page.url()),
         _boundary_error: error?.boundaryCode ?? "MALFORMED_BROWSER_STATE",
       };
     }

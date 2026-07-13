@@ -98,6 +98,16 @@ def test_unknown_assertion_kind_rejected(tmp_path):
         _load(tmp_path, _minimal(checkpoints=[cp]))
 
 
+def test_checkpoint_id_with_separators_or_dots_rejected(tmp_path):
+    # the id becomes a snapshot path component, so a separator or dot-segment (e.g. '../final') that
+    # could escape the checkpoints directory must be rejected at load, not resolved on disk.
+    for bad_id in ("../final", "a/b", "..", ".hidden"):
+        cp = {"id": bad_id, "mode": "gate", "after_turn_id": "t1",
+              "assertions": [{"kind": "version_exists", "artifact": "a", "version": 1}]}
+        with pytest.raises(ScenarioError, match="filesystem-safe slug"):
+            _load(tmp_path, _minimal(checkpoints=[cp]))
+
+
 _GOOD_SHA = "0" * 64
 
 

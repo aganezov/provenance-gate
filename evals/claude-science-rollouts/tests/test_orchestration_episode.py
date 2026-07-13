@@ -415,7 +415,7 @@ def test_pbmc_episode_executes_full_plan_and_persists_compact_evidence(tmp_path:
     assert all(item["stability_attempts"] == 2 for item in manifest["checkpoints"])
     assert manifest["final_snapshot"]["stability_attempts"] == 2
 
-    # every settled turn now carries the persisted-response evidence read at its settle point.
+    # every settled turn carries the persisted-response evidence read at its settle point.
     assert all(item["persisted_response"] is not None for item in manifest["turns"])
     assert all(item["persisted_input_request"] is None for item in manifest["turns"])
     first_response = manifest["turns"][0]["persisted_response"]

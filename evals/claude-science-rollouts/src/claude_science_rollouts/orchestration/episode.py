@@ -272,6 +272,14 @@ class EpisodeExecutor:
         rules_after: dict[str, list[ResponseRule]] = {}
         for rule in scenario.response_rules:
             rules_after.setdefault(rule.after_turn_id, []).append(rule)
+        # authored prompt for every turn the run can end on — submit steps and deterministic rule
+        # replies — so whichever turn is last can be rebound to the immutable final snapshot.
+        turn_prompts = {
+            step.turn_id: step.prompt for step in plan if step.op == "submit" and step.prompt
+        }
+        for rules in rules_after.values():
+            for rule in rules:
+                turn_prompts[f"rule.{rule.id}"] = rule.reply
 
         terminal_reason = "completed"
         pending_error: BaseException | None = None
@@ -310,7 +318,9 @@ class EpisodeExecutor:
         finally:
             try:
                 final_snapshot, final_attempts = await self._materialize_final_snapshot(config)
-                self._regrade_final_turn(plan, evidence, config, final_snapshot, final_attempts)
+                self._regrade_final_turn(
+                    turn_prompts, evidence, config, final_snapshot, final_attempts
+                )
                 evidence.record_snapshot(final_snapshot.path, config.run_dir, final_attempts)
             except BaseException as exc:
                 if pending_error is None:
@@ -777,23 +787,22 @@ class EpisodeExecutor:
 
     def _regrade_final_turn(
         self,
-        plan: tuple[Step, ...],
+        turn_prompts: dict[str, str],
         evidence: EpisodeEvidence,
         config: EpisodeConfig,
         snapshot: ProjectSnapshot,
         stability_attempts: int,
     ) -> None:
-        """Re-bind the last submitted turn's captured evidence to the immutable final snapshot."""
-        final_step = next((item for item in reversed(plan) if item.op == "submit"), None)
-        if final_step is None:
-            return
-        turn = next(
-            (item for item in reversed(evidence.turns) if item["turn_id"] == final_step.turn_id),
-            None,
-        )
+        """Re-bind the LAST captured turn's evidence to the immutable final snapshot, so the
+        reported final prose is proven against the same bytes the record advertises as final — even
+        when a deterministic rule reply, not the last submit, is the turn the rollout ended on."""
+        turn = evidence.turns[-1] if evidence.turns else None
         if turn is None:
             return
         if turn["persisted_response"] is None and turn["persisted_input_request"] is None:
+            return
+        prompt = turn_prompts.get(turn["turn_id"])
+        if prompt is None:
             return
         root_frame_id = turn.get("root_frame_id")
         user_turn_id = turn.get("normalized_user_turn_id")
@@ -803,14 +812,13 @@ class EpisodeExecutor:
             for value in (root_frame_id, user_turn_id, authored_prompt_sha256)
         ):
             raise PersistedResponseError("final turn identity is incomplete")
-        assert final_step.prompt is not None
         if turn["persisted_response"] is not None:
             persisted = self.response_reader.read_from_snapshot(
                 snapshot_db=snapshot.path,
                 project_id=config.project_id,
                 root_frame_id=root_frame_id,
                 user_turn_id=user_turn_id,
-                authored_prompt=final_step.prompt,
+                authored_prompt=prompt,
                 authored_prompt_sha256=authored_prompt_sha256,
                 stability_attempts=stability_attempts,
             )
@@ -821,7 +829,7 @@ class EpisodeExecutor:
                 project_id=config.project_id,
                 root_frame_id=root_frame_id,
                 user_turn_id=user_turn_id,
-                authored_prompt=final_step.prompt,
+                authored_prompt=prompt,
                 authored_prompt_sha256=authored_prompt_sha256,
                 stability_attempts=stability_attempts,
             )

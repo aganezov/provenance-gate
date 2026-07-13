@@ -1,3 +1,5 @@
+import { ORIGIN_FROM_HTTP_URL_SOURCE } from "./observations.mjs";
+
 const MAX_MODEL_LABEL_BYTES = 128;
 
 function byteLength(value) {
@@ -66,8 +68,7 @@ export function buildSelectModelSource({
   }
   return `async (page) => {
     let mutationAttempted = false;
-    const originOf = (value) =>
-      String(value).match(/^https?:[/][/][^/?#]+/)?.[0] ?? null;
+    const originFromHttpUrl = ${ORIGIN_FROM_HTTP_URL_SOURCE};
     const fail = (code) => {
       const error = new Error(code);
       error.boundaryCode = code;
@@ -166,8 +167,18 @@ export function buildSelectModelSource({
       const confirmationDeadline = Date.now() + 5000;
       let after;
       while (true) {
-        after = await selectedLabel();
-        if (after.label === ${JSON.stringify(target)}) break;
+        // the composer control can briefly remount or the menu animate closed right after the
+        // click, so a transient ambiguous read is not a failure — keep polling until the label
+        // confirms or the deadline elapses, then report the specific unconfirmed error.
+        try {
+          const current = await selectedLabel();
+          if (current.label === ${JSON.stringify(target)}) {
+            after = current;
+            break;
+          }
+        } catch (error) {
+          if (error?.boundaryCode !== "MODEL_CONTROL_AMBIGUOUS") throw error;
+        }
         if (Date.now() >= confirmationDeadline) fail("MODEL_SELECTION_UNCONFIRMED");
         await page.waitForTimeout(50);
       }
@@ -185,7 +196,7 @@ export function buildSelectModelSource({
       };
     } catch (error) {
       return {
-        _origin: originOf(page.url()),
+        _origin: originFromHttpUrl(page.url()),
         _mutation_attempted: mutationAttempted,
         _boundary_error: error?.boundaryCode ?? "MODEL_SELECTION_UNCONFIRMED",
       };

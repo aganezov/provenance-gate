@@ -1,5 +1,16 @@
 const MAX_TURN_TEXT_BYTES = 16384;
 
+// The scheme://host origin of an http(s) URL — IPv6-bracket aware — or "" when the URL has none.
+// One definition, injected into every browser-source builder, so the origin echoed on error paths
+// is computed identically everywhere (the boundary compares it to the expected session origin).
+export function originFromHttpUrl(value) {
+  if (typeof value !== "string") throw new TypeError("Page URL must be a string");
+  const match = value.match(/^(https?):\/\/(\[[^\]]+\]|[^/?#]+)(?=\/|[?#]|$)/u);
+  return match ? `${match[1]}://${match[2]}` : "";
+}
+
+export const ORIGIN_FROM_HTTP_URL_SOURCE = originFromHttpUrl.toString();
+
 export function classifyObservedTurnState({
   busy,
   approvalCardCount,
@@ -264,14 +275,18 @@ function pageObservationHelpers(classifyApprovalControl, extractApprovalTitle) {
         classifyApprovalControl(
           control.getAttribute("aria-label") ?? control.textContent ?? "",
         ));
-      if (
-        controlKinds.filter((kind) => kind === "allow").length !== 1 ||
-        controlKinds.filter((kind) => kind === "deny").length !== 1
-      ) {
-        return null;
-      }
       const title = extractApprovalTitle(card.innerText ?? card.textContent ?? "");
-      if (!title) return null;
+      // Surface only an actionable card: a live allow AND deny control (CS may render more than one
+      // allow variant, e.g. "Allow" plus "Allow for this conversation" — the resolver picks the one
+      // it wants) with a title. A resolved or historical card that keeps the testid but has no live
+      // pair is skipped, not treated as malformed state that would poison the whole observation.
+      if (
+        !controlKinds.includes("allow") ||
+        !controlKinds.includes("deny") ||
+        !title
+      ) {
+        continue;
+      }
       const fingerprint = await sha256(`approval\n${title}`);
       cards.push({
         card_id: `approval:${fingerprint.slice(0, 32)}:${index}`,

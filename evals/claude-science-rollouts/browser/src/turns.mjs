@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 
-import { PAGE_OBSERVATION_HELPERS_SOURCE } from "./observations.mjs";
+import {
+  ORIGIN_FROM_HTTP_URL_SOURCE,
+  PAGE_OBSERVATION_HELPERS_SOURCE,
+  originFromHttpUrl,
+} from "./observations.mjs";
+
+export { originFromHttpUrl };
 
 const MAX_DELIVERY_TEXT_BYTES = 65536;
 const POLL_INTERVAL_MS = 400;
@@ -24,14 +30,7 @@ export function composerInsertionText(value) {
   return value.replace(/\r\n|[\n\r\u2028\u2029]/gu, " ");
 }
 
-export function originFromHttpUrl(value) {
-  if (typeof value !== "string") throw new TypeError("Page URL must be a string");
-  const match = value.match(/^(https?):\/\/(\[[^\]]+\]|[^/?#]+)(?=\/|[?#]|$)/u);
-  return match ? `${match[1]}://${match[2]}` : "";
-}
-
 const NORMALIZE_VISIBLE_TEXT_SOURCE = normalizeVisibleText.toString();
-const ORIGIN_FROM_HTTP_URL_SOURCE = originFromHttpUrl.toString();
 
 const COLLECT_TURN_OBSERVATION_SOURCE = `async (page) => {
   const locationState = await page.evaluate(() => {

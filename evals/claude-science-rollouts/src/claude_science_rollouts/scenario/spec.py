@@ -13,9 +13,16 @@ approval policy is deny-by-default.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+# A checkpoint id becomes a path component of its persisted snapshot (snapshots/checkpoints/<id>/),
+# so it must be a filesystem-safe slug: letters, digits, '-' and '_', with an alphanumeric start.
+# This forbids separators and dot-segments (e.g. '../final'), which containment checks downstream
+# would otherwise let escape the checkpoints directory.
+_SAFE_CHECKPOINT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 
 SCHEMA_VERSION = 1
 _MODES = frozenset({"gate", "measure"})
@@ -228,6 +235,11 @@ def _checkpoint(cp: Any, turn_ids: set[str], index: int) -> str:
     if not isinstance(cp, dict):
         raise ScenarioError(f"{ctx} must be an object")
     cp_id = _str(cp.get("id"), f"{ctx}.id")
+    if not _SAFE_CHECKPOINT_ID.fullmatch(cp_id):
+        raise ScenarioError(
+            f"{ctx}.id must be a filesystem-safe slug (letters, digits, '-', '_'; "
+            f"no separators or dots): {cp_id!r}"
+        )
     if cp.get("mode", "gate") not in _MODES:
         raise ScenarioError(f"{ctx}.mode must be one of {sorted(_MODES)}")
     if cp.get("after_turn_id") not in turn_ids:

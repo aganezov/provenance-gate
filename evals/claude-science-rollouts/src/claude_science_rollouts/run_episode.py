@@ -33,6 +33,7 @@ from claude_science_rollouts.capture.evidence import file_sha256
 from claude_science_rollouts.oracle.snapshot import open_readonly
 from claude_science_rollouts.orchestration.browser_driver import TypedBrowserDriver
 from claude_science_rollouts.orchestration.episode import EpisodeConfig, EpisodeExecutor
+from claude_science_rollouts.orchestration.models import bounded_label
 from claude_science_rollouts.orchestration.prose import SubprocessProseInterpreter
 from claude_science_rollouts.persistence.responses import DatabaseResponseReader
 from claude_science_rollouts.persistence.snapshots import SnapshotBarrierConfig
@@ -316,13 +317,7 @@ def _validate_inputs(args: argparse.Namespace) -> tuple[Path, Path]:
 
 
 def _validate_bounded_text(value: object, label: str) -> None:
-    if (
-        not isinstance(value, str)
-        or not value
-        or value.strip() != value
-        or len(value.encode()) > 128
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
-    ):
+    if not bounded_label(value):
         raise RunFailure(f"{label} must be bounded non-empty text")
 
 
@@ -418,6 +413,19 @@ def _outcome_classification(terminal_reason: str) -> str:
     return "incomplete"
 
 
+def _observed_model_identifiers(turns: list[dict[str, Any]]) -> set[str]:
+    """The non-null root model identifiers CS recorded across the captured turns — the evidence of
+    which model each turn actually ran under. A turn that never surfaced an identifier contributes
+    nothing (the persisted reader allows it to be absent)."""
+    identifiers: set[str] = set()
+    for turn in turns:
+        for key in ("persisted_response", "persisted_input_request"):
+            record = turn.get(key)
+            if record and record.get("root_model_identifier"):
+                identifiers.add(record["root_model_identifier"])
+    return identifiers
+
+
 def _run_summary(
     args: argparse.Namespace,
     scenario: Scenario,
@@ -435,6 +443,11 @@ def _run_summary(
     final_input_request = (
         final_turn.get("persisted_input_request") if final_turn is not None else None
     )
+    # a rollout is only operationally complete if every turn that named a model ran under the one we
+    # pinned — a picker mismatch or drift otherwise yields a "complete" record for the wrong model.
+    observed_models = _observed_model_identifiers(turns)
+    mismatched_models = sorted(m for m in observed_models if m != args.expected_model_identifier)
+    model_identity_verified = not mismatched_models
     return {
         "episode_id": episode_id,
         "project_id": project_id,
@@ -444,7 +457,15 @@ def _run_summary(
         "expected_model_identifier": args.expected_model_identifier,
         "terminal_reason": result.terminal_reason,
         "outcome_classification": _outcome_classification(result.terminal_reason),
-        "operationally_complete": result.terminal_reason in _OPERATIONAL_TERMINAL_REASONS,
+        "operationally_complete": (
+            result.terminal_reason in _OPERATIONAL_TERMINAL_REASONS and model_identity_verified
+        ),
+        "model_identity": {
+            "expected": args.expected_model_identifier,
+            "observed": sorted(observed_models),
+            "mismatched": mismatched_models,
+            "verified": model_identity_verified,
+        },
         "baseline": baseline,
         "manifest": {
             "path": str(result.manifest_path.resolve()),

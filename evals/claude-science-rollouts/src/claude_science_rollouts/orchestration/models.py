@@ -64,14 +64,20 @@ def _non_negative_integer(value: object, name: str) -> None:
         raise ValueError(f"{name} must be a non-negative integer")
 
 
+def bounded_label(value: object) -> bool:
+    """A non-empty, trimmed, ≤128-byte string with no control characters — the shape a model label
+    and the run's bounded text parameters share, so both boundaries validate it one way."""
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value.strip() == value
+        and len(value.encode()) <= 128
+        and not any(ord(character) < 32 or ord(character) == 127 for character in value)
+    )
+
+
 def _model_label(value: object, name: str) -> None:
-    if (
-        not isinstance(value, str)
-        or not value
-        or value.strip() != value
-        or len(value.encode()) > 128
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
-    ):
+    if not bounded_label(value):
         raise ValueError(f"{name} must be a bounded model label")
 
 

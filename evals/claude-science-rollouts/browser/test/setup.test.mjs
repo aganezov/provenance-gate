@@ -74,7 +74,7 @@ test("attachment input waits for exact rootless chat hydration before one select
             origin,
             projectId: "project-001",
             rootFrameId: null,
-            chatId: "chat-current",
+            chatId: "chat-001",
             composer: { empty: true, visible: true },
             turns: [],
           };
@@ -96,7 +96,7 @@ test("attachment input waits for exact rootless chat hydration before one select
   assert.deepEqual(result, {
     _origin: origin,
     _mutation_attempted: true,
-    result: { ready: true, chat_id: "chat-current" },
+    result: { ready: true, chat_id: "chat-001" },
   });
   assert.equal(observations, 2);
   assert.equal(selectedPath, "/private/tmp/pbmc_tiny_seed.csv");
@@ -115,7 +115,7 @@ test("attachment input reports the exact pre-upload control stage", async () => 
         origin,
         projectId: "project-001",
         rootFrameId: null,
-        chatId: "chat-current",
+        chatId: "chat-provisional",
         composer: { empty: true, visible: true },
         turns: [],
       };
@@ -136,6 +136,48 @@ test("attachment input reports the exact pre-upload control stage", async () => 
   assert.equal(result._origin, origin);
   assert.equal(result._mutation_attempted, false);
   assert.equal(result._boundary_error, "ATTACHMENT_INPUT_UNAVAILABLE");
+});
+
+
+test("attachment waits for the requested chat and never uploads to another", async () => {
+  const source = buildSetAttachmentSource({
+    origin,
+    projectId: "project-001",
+    chatId: "chat-requested",
+    sourcePath: "/private/tmp/pbmc_tiny_seed.csv",
+  });
+  // a different blank chat is active first; only once the requested chat is active does it upload.
+  const chatIds = ["chat-other", "chat-other", "chat-requested"];
+  let index = 0;
+  let uploadedTo = null;
+  const page = {
+    async evaluate() {
+      const chatId = chatIds[Math.min(index++, chatIds.length - 1)];
+      return {
+        origin,
+        projectId: "project-001",
+        rootFrameId: null,
+        chatId,
+        composer: { empty: true, visible: true },
+        turns: [],
+      };
+    },
+    locator() {
+      return {
+        count: async () => 1,
+        setInputFiles: async () => { uploadedTo = "chat-requested"; },
+      };
+    },
+    async waitForTimeout() {},
+    url: () => `${origin}/projects/project-001`,
+  };
+  const run = new Function(`return (${source})`)();
+
+  const result = await run(page);
+
+  assert.equal(result._mutation_attempted, true);
+  assert.equal(result.result.chat_id, "chat-requested");
+  assert.equal(uploadedTo, "chat-requested");
 });
 
 test("new chat returns a distinct post-click identity after a rooted chat", async () => {

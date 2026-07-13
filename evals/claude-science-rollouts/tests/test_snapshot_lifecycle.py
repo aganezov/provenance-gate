@@ -140,8 +140,8 @@ CREATE TABLE projects(id TEXT PRIMARY KEY, name TEXT);
 CREATE TABLE artifacts(
     id TEXT PRIMARY KEY, project_id TEXT, filename TEXT, latest_version_id TEXT);
 CREATE TABLE artifact_versions(
-    id TEXT PRIMARY KEY, artifact_id TEXT, version_number INTEGER,
-    parent_version_id TEXT, checksum TEXT, dependency_mappings TEXT);
+    id TEXT PRIMARY KEY, artifact_id TEXT, version_number INTEGER, parent_version_id TEXT,
+    checksum TEXT, dependency_mappings TEXT, producing_cell_id TEXT);
 CREATE TABLE artifact_dependencies(
     id TEXT PRIMARY KEY, artifact_version_id TEXT, depends_on_version_id TEXT, reference_name TEXT);
 """
@@ -152,7 +152,8 @@ def _mappings(*version_ids: str) -> str:
 
 
 def _settling_conn() -> sqlite3.Connection:
-    # two uploads (no declared inputs) plus a computed output declaring both as inputs.
+    # two uploads (no producing cell, no declared inputs) plus a computed output (a producing cell)
+    # declaring both as inputs.
     conn = sqlite3.connect(":memory:")
     conn.executescript(_SETTLING_SCHEMA)
     conn.execute("INSERT INTO projects VALUES('p', 'test')")
@@ -162,10 +163,10 @@ def _settling_conn() -> sqlite3.Connection:
         ("a_qc", "cells.qc.csv", "v_qc"),
     ):
         conn.execute("INSERT INTO artifacts VALUES(?, 'p', ?, ?)", (aid, filename, vid))
-    conn.execute("INSERT INTO artifact_versions VALUES('v_cells', 'a_cells', 1, NULL, 'c', NULL)")
-    conn.execute("INSERT INTO artifact_versions VALUES('v_params', 'a_params', 1, NULL, 'c', NULL)")
+    conn.execute("INSERT INTO artifact_versions VALUES('v_cells','a_cells',1,NULL,'c',NULL,NULL)")
+    conn.execute("INSERT INTO artifact_versions VALUES('v_params','a_params',1,NULL,'c',NULL,NULL)")
     conn.execute(
-        "INSERT INTO artifact_versions VALUES('v_qc', 'a_qc', 1, NULL, 'c', ?)",
+        "INSERT INTO artifact_versions VALUES('v_qc','a_qc',1,NULL,'c',?,'cell_qc')",
         (_mappings("v_cells", "v_params"),),
     )
     conn.commit()
@@ -211,6 +212,34 @@ def test_settled_observer_ready_without_dependency_mappings_column() -> None:
     assert observation.base.project == ("project-1", "test")
 
 
+def test_settled_observer_counts_edges_and_does_not_stall_on_id_mismatch() -> None:
+    # readiness counts landed edges rather than matching specific ids, so an edge CS wrote to a
+    # different-but-valid version can't hang the barrier to a timeout: two edges satisfy two
+    # declared inputs even though v_params was not the recorded target of the second one.
+    conn = _settling_conn()
+    conn.execute("INSERT INTO artifact_dependencies VALUES('d1', 'v_qc', 'v_cells', 'cells.csv')")
+    conn.execute("INSERT INTO artifact_dependencies VALUES('d2', 'v_qc', 'v_other', 'other.csv')")
+    conn.commit()
+    assert observe_project_settled(conn, "p").ready is True
+
+
+def test_settled_observer_waits_for_a_computed_declaration_to_land() -> None:
+    # a computed version (one with a producing cell) whose dependency_mappings has not been written
+    # yet counts as not-settled, so a snapshot caught before the declaration lands is not complete.
+    conn = _settling_conn()
+    conn.execute("UPDATE artifact_versions SET dependency_mappings = NULL WHERE id = 'v_qc'")
+    conn.commit()
+    assert observe_project_settled(conn, "p").ready is False
+    conn.execute(
+        "UPDATE artifact_versions SET dependency_mappings = ? WHERE id = 'v_qc'",
+        (_mappings("v_cells", "v_params"),),
+    )
+    conn.execute("INSERT INTO artifact_dependencies VALUES('d1', 'v_qc', 'v_cells', 'cells.csv')")
+    conn.execute("INSERT INTO artifact_dependencies VALUES('d2', 'v_qc', 'v_params', 'qc.csv')")
+    conn.commit()
+    assert observe_project_settled(conn, "p").ready is True
+
+
 class _Clock:
     def __init__(self) -> None:
         self.now = 0.0
@@ -220,6 +249,35 @@ class _Clock:
 
     async def sleep(self, delay: float) -> None:
         self.now += delay
+
+
+def test_barrier_returns_a_settled_pair_that_crosses_the_deadline(tmp_path: Path) -> None:
+    # a settled pair found on a poll that crosses the deadline is still a good snapshot; it must be
+    # returned, not discarded as a timeout on the very poll that succeeds.
+    source = tmp_path / "live.db"
+    run_dir = tmp_path / "run"
+    _seed_database(source)
+    clock = _Clock()
+    calls = iter(range(100))
+
+    def observer(_conn: sqlite3.Connection, _project_id: str) -> object:
+        if next(calls) == 1:  # the second capture crosses the deadline
+            clock.now += 0.2
+        return _ReadyObservation(True, "settled")
+
+    result = asyncio.run(
+        await_stable_project_snapshot(
+            source,
+            "project-1",
+            run_dir,
+            config=SnapshotBarrierConfig(poll_interval_seconds=0.1, timeout_seconds=0.15),
+            observer=observer,
+            sleep=clock.sleep,
+            monotonic=clock.monotonic,
+        )
+    )
+    assert result.attempts == 2
+    assert result.observation == _ReadyObservation(True, "settled")
 
 
 def test_timeout_cleans_polling_snapshots_by_default(tmp_path: Path) -> None:
