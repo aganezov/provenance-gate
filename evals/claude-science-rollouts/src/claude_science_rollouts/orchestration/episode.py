@@ -143,8 +143,9 @@ def matches_response_rule(rule: ResponseRule, observation: ChatObservation) -> b
     if latest_assistant is None or latest_assistant.truncated:
         return False
     assistant_text = latest_assistant.text.lower()
-    branch_terms = ("sibling", "composition", "cytotoxic", "qc summary", "panel")
-    return "regenerate" in assistant_text and any(term in assistant_text for term in branch_terms)
+    return "regenerate" in assistant_text and any(
+        term.lower() in assistant_text for term in rule.match_terms
+    )
 
 
 def _persisted_response_record(

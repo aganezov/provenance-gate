@@ -218,8 +218,17 @@ def test_valid_structured_assertions_load(tmp_path):
 
 def test_duplicate_response_rule_id_rejected(tmp_path):
     rules = [
-        {"id": "r", "after_turn_id": "t1", "trigger": "x", "reply": "y"},
-        {"id": "r", "after_turn_id": "t1", "trigger": "z", "reply": "w"},
+        {"id": "r", "after_turn_id": "t1", "trigger": "x", "reply": "y", "match_terms": ["a"]},
+        {"id": "r", "after_turn_id": "t1", "trigger": "z", "reply": "w", "match_terms": ["a"]},
     ]
     with pytest.raises(ScenarioError, match="duplicate response_rule id"):
         _load(tmp_path, _minimal(response_rules=rules))
+
+
+def test_response_rule_without_match_terms_rejected(tmp_path):
+    # the orchestrator matches on scenario vocabulary carried by the rule, so a rule must declare a
+    # non-empty match_terms rather than relying on terms hardcoded in the harness.
+    rule = {"id": "r", "after_turn_id": "t1", "trigger": "offer_to_regenerate_siblings",
+            "reply": "no"}
+    with pytest.raises(ScenarioError, match="match_terms"):
+        _load(tmp_path, _minimal(response_rules=[rule]))

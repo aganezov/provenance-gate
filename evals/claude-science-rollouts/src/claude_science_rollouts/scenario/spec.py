@@ -72,6 +72,9 @@ class ResponseRule:
     after_turn_id: str
     trigger: str
     reply: str
+    # scenario vocabulary the trigger looks for, so the orchestrator stays scenario-agnostic —
+    # the terms live with the scenario, not hardcoded in the harness.
+    match_terms: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,11 +318,21 @@ def load_scenario(path: str | Path) -> Scenario:
         after = _str(r.get("after_turn_id"), f"response_rules[{i}].after_turn_id")
         if after not in turn_ids:
             raise ScenarioError(f"response_rules[{i}].after_turn_id must name a construction turn")
+        terms = r.get("match_terms")
+        if (
+            not isinstance(terms, list)
+            or not terms
+            or not all(isinstance(t, str) and t for t in terms)
+        ):
+            raise ScenarioError(
+                f"response_rules[{i}].match_terms must be a non-empty array of strings"
+            )
         rules.append(ResponseRule(
             id=rid,
             after_turn_id=after,
             trigger=_str(r.get("trigger"), f"response_rules[{i}].trigger"),
             reply=_str(r.get("reply"), f"response_rules[{i}].reply"),
+            match_terms=tuple(terms),
         ))
 
     return Scenario(

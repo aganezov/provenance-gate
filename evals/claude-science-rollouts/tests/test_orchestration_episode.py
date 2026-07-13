@@ -963,6 +963,7 @@ def _sibling_offer_scenario() -> Scenario:
                 "construction",
                 "offer_to_regenerate_siblings",
                 "Leave the sibling branch unchanged.",
+                ("sibling", "composition", "cytotoxic", "qc summary", "panel"),
             ),
         ),
     )
