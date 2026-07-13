@@ -11,8 +11,9 @@ pins that both readers exclude the render outputs.
 
 import sqlite3
 
-from provenance_gate.adapters.cs_skill.host_query_reader import SELF_ARTIFACTS, HostQueryReader
+from provenance_gate.adapters.cs_skill.host_query_reader import HostQueryReader
 from provenance_gate.adapters.external import substrate
+from provenance_gate.core.model import SELF_ARTIFACTS
 
 
 class _FakeHost:
@@ -138,12 +139,12 @@ def test_reader_excludes_skill_render_outputs(cs_conn):
 
     # the external server reader must exclude them identically, so the two readers derive the SAME
     # graph on a rendered project.
-    host_scoped = HostQueryReader(_FakeHost(cs_conn)).read_project_graph("proj_smoke")
-    db_scoped = substrate.read_project_graph(cs_conn, "proj_smoke")
+    host_reader = HostQueryReader(_FakeHost(cs_conn)).read_project_graph("proj_smoke")
+    db_reader = substrate.read_project_graph(cs_conn, "proj_smoke")
     files_db = {a.filename
-                for n in db_scoped.nodes for a in list(n.output_surface) + list(n.input_surface)}
+                for n in db_reader.nodes for a in list(n.output_surface) + list(n.input_surface)}
     assert "cockpit.html" not in files_db and "cytoscape-dagre.bundle.min.js" not in files_db
-    assert host_scoped.nodes == db_scoped.nodes   # exact parity, render outputs and all
+    assert host_reader.nodes == db_reader.nodes   # exact parity, render outputs and all
 
 
 def test_reader_keeps_null_filename(cs_conn):

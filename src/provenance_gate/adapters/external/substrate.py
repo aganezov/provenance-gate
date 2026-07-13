@@ -60,7 +60,7 @@ _VERSION_SELECT = (
 
 # Exclude the skill's own render outputs from every graph, matching the in-CS reader, so the
 # two readers agree on any project — rendered or not. NULL-safe: a NULL filename is kept.
-_SELF_PLACEHOLDERS = ",".join("?" * len(SELF_ARTIFACTS))
+_SELF_PLACEHOLDERS = ",".join(["?"] * len(SELF_ARTIFACTS))
 _NOT_SELF = f"(a.filename IS NULL OR a.filename NOT IN ({_SELF_PLACEHOLDERS}))"
 
 
