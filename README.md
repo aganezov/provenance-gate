@@ -1,8 +1,8 @@
-# provenance-gate
+# Provenance Gate
 
-A deterministic trust gate for agentic science, running read-only over Claude Science (CS). It flags a
-class of failure that's hard to catch by reading the output: a result quietly built on stale or
-version-conflicting upstream data.
+*A deterministic, read-only trust gate for agentic science over Claude Science (CS). It flags a
+result quietly built on stale or version-conflicting upstream data — a conflict that lives in the
+provenance graph, not the prose.*
 
 ![In Claude Science, the agent renders the Provenance Gate cockpit as a read-only artifact; opening it and clicking the flagged cell 7 shows its deterministic version_mix verdict](docs/img/cockpit-demo.gif)
 
@@ -24,16 +24,52 @@ The gate reads the CS provenance DAG and computes two verdicts for each computat
 - `stale_input` — the cell read a version of some artifact that is no longer current.
 - `version_mix` — the cell's consumed lineage reaches two live versions of the same artifact.
 
-Both are structural facts about the graph. No model decides them, so they aren't something an agent
-can talk its way past. Green here doesn't mean the analysis is correct; it means the analysis rests on
-current, consistent inputs.
+Both are structural facts about the graph. No model decides them: an agent can argue a flag is
+harmless — one did, in testing — but a flag is a fact about the graph, not a judgment it can revise. A
+clean verdict doesn't mean the analysis is correct; it means it rests on current, consistent inputs.
 
 These two checks are the deterministic core of a larger trust-gate design. The rest of that design,
 and what we left out, is in [docs/DESIGN-RATIONALE.md](docs/DESIGN-RATIONALE.md).
 
+## Does this happen in practice?
+
+Yes. We ran one PBMC single-cell workflow 24 times, unattended, on two models. Twelve runs shipped a
+figure package that combined results computed from two different QC cohorts, and six of those shipped
+it with no warning anywhere in the conversation — the conflict lived in the provenance graph, not the
+prose.
+
+Those runs come from a browser-driven **generation harness** ([evals/claude-science-rollouts/](evals/claude-science-rollouts/))
+that drives controlled, unattended CS workflows and freezes each one — the agent's responses,
+deterministic construction checkpoints, and a project-scoped provenance snapshot — into an immutable
+record. It reads CS through its own read-only closure walk, and it generates and captures rather than
+grades. The per-attempt breakdown is in
+[docs/PBMC-ROLLOUT-RESULTS.md](docs/PBMC-ROLLOUT-RESULTS.md); the scenario that builds the conflict is
+in [docs/PBMC-ROLLOUT-SCENARIO.md](docs/PBMC-ROLLOUT-SCENARIO.md).
+
+## Run
+
+With [uv](https://docs.astral.sh/uv/):
+
+- **Build the skill** — inline `core/` into the zero-dependency kernel and package it for CS:
+  ```sh
+  uv run python design/build_skill.py     # → design/skill_dist/provenance-gate.zip
+  ```
+  Upload that zip in Claude Science to install the skill (the six functions below).
+- **Serve the audit + cockpit** over a live operon:
+  ```sh
+  uv run pg-serve --cs-db <path/to/operon-cli.db>     # http://127.0.0.1:8799
+  ```
+- **Audit a captured run** directly from its frozen db — no live CS:
+  ```sh
+  uv run pg-audit evals/claude-science-rollouts/examples/pbmc-version-mix/project.db
+  ```
+- **Generate rollouts** with the browser-driven harness — the setup is involved and lives in
+  [evals/claude-science-rollouts/](evals/claude-science-rollouts/).
+
 ## The surface
 
-Six functions. Five are for the agent and return JSON; one renders the cockpit for a person.
+Six functions the installed skill exposes. Five are for the agent and return JSON; one renders the
+cockpit for a person.
 
 | Function | What it answers |
 |---|---|
@@ -61,12 +97,18 @@ in-CS kernel over `host.query` that is inlined into a single zero-dependency fil
 the two deriving the same graph. Everything is read-only, and every verdict is a pure function of the
 graph.
 
+## Verified in Claude Science
+
+The gate was run end to end inside CS on a real version-mixed project. The in-CS reader reproduced the
+server audit cell for cell, and the verdict held even where the agent — handed the same conflict in
+prose — talked itself out of it. What that showed, and its honest limits, is in
+[docs/GATE-VERIFICATION.md](docs/GATE-VERIFICATION.md).
+
 ## Status
 
 - Done: the two checks, all six functions, and the cockpit — tested and run against live CS projects.
-- Not yet: publishing the skill, which is what lets the agent run the pre-write check on its own.
-- Measured: one scenario, 24 unattended rollouts — six silently shipped a mixed-version package
-  ([docs/PBMC-ROLLOUT-RESULTS.md](docs/PBMC-ROLLOUT-RESULTS.md)).
+- Not yet: the autonomous pre-write trigger — the agent reaching for the gate on its own, before it
+  writes (what we found about triggering it is under [Room to explore](#room-to-explore)).
 
 ## Room to explore
 
@@ -76,16 +118,29 @@ Things we'd add next. Some were cut for time, some wait on the substrate (see
 - A faithfulness check — does a reported value match its frozen source. High signal, cut for time.
 - Auto-detecting comparability sites: two arms of a shared root processed differently, so nobody has
   to spot the fork by eye. Today the cockpit selection plus the review hand-off does this by hand.
-- A persisted attestation layer (assumptions, links a human owns), which needs a writable store.
-- The autonomous pre-write trigger, once the skill is published.
+- A persisted attestation layer — so a scientist can mark a reviewed conflict resolved rather than
+  regenerate everything (version-stamped, so it re-surfaces if the lineage changes), alongside
+  assumptions and links a human owns. Needs a writable store.
+- **Getting the agent to reach for the gate unprompted.** In a small probe, a skill sitting in the
+  catalog didn't get invoked before a risky merge, but a standing policy in the project's Agent Context
+  did ([docs/GATE-VERIFICATION.md](docs/GATE-VERIFICATION.md)). Making that reliable — a save-artifact
+  hook, or a learned pre-write reflex trained to call the gate before shipping — is open ground.
 - A live cockpit instead of a re-rendered snapshot.
 
 ## Where to look
 
 - [docs/DESIGN-RATIONALE.md](docs/DESIGN-RATIONALE.md) — assumptions, the design decisions and why,
   scope, and limitations.
-- [docs/PBMC-ROLLOUT-RESULTS.md](docs/PBMC-ROLLOUT-RESULTS.md) — 24 unattended rollouts of the PBMC
-  provenance-conflict scenario: every attempt's grade and how they were graded.
+- [docs/PBMC-ROLLOUT-SCENARIO.md](docs/PBMC-ROLLOUT-SCENARIO.md) — the stress-test scenario: the
+  version-mixing trap, the fixed inputs, the authored turns, and the grading categories.
+- [docs/PBMC-ROLLOUT-RESULTS.md](docs/PBMC-ROLLOUT-RESULTS.md) — 24 unattended rollouts of that
+  scenario: every attempt's grade and how they were graded.
+- [docs/GATE-VERIFICATION.md](docs/GATE-VERIFICATION.md) — the end-to-end run inside Claude Science,
+  and its limits.
+- [evals/claude-science-rollouts/](evals/claude-science-rollouts/) — the generation harness that
+  produces and freezes the rollouts.
+- [evals/claude-science-rollouts/examples/pbmc-version-mix/](evals/claude-science-rollouts/examples/pbmc-version-mix/)
+  — a captured rollout the gate flags `version_mix`.
 - `src/provenance_gate/core/` — model, derive, audit.
 - `design/build_skill.py` — the build that inlines core into `kernel.py`.
 - `ui/cockpit.html` — the cockpit.
