@@ -34,6 +34,7 @@ const MAX_TURN_TEXT_BYTES = 16384;
 const MAX_PROMPT_BYTES = 65536;
 const MAX_PROJECT_NAME_BYTES = 640;
 const MAX_SOURCE_PATH_BYTES = 4096;
+const MAX_MODEL_LABEL_BYTES = 128;
 const CREDENTIAL_KEYS = new Set([
   "authorization",
   "cookie",
@@ -177,6 +178,26 @@ export function validateRequest(value) {
         request.payload.root_frame_id,
         "request.payload.root_frame_id",
       );
+    }
+  }
+  if (request.operation === "model.select") {
+    exactKeys(
+      request.payload,
+      ["project_id", "chat_id", "model_label"],
+      "request.payload",
+    );
+    identifier(request.payload.project_id, "request.payload.project_id");
+    identifier(request.payload.chat_id, "request.payload.chat_id");
+    boundedText(
+      request.payload.model_label,
+      MAX_MODEL_LABEL_BYTES,
+      "request.payload.model_label",
+    );
+    if (
+      request.payload.model_label.trim() !== request.payload.model_label ||
+      /[\u0000-\u001f\u007f]/u.test(request.payload.model_label)
+    ) {
+      throw new BoundaryError("INVALID_TEXT", "request.payload.model_label is invalid");
     }
   }
   if (request.operation === "turn.submit_wait") {
@@ -339,6 +360,43 @@ function validateOperationResult(operation, result, requestPayload) {
       throw new BoundaryError(
         "INVALID_RESPONSE",
         "Attachment result does not correlate to its request",
+      );
+    }
+    return;
+  }
+  if (operation === "model.select") {
+    exactKeys(
+      result,
+      [
+        "project_id",
+        "chat_id",
+        "model_label",
+        "previous_model_label",
+        "changed",
+        "confirmed",
+      ],
+      "response.result",
+    );
+    identifier(result.project_id, "response.result.project_id");
+    identifier(result.chat_id, "response.result.chat_id");
+    boundedText(result.model_label, MAX_MODEL_LABEL_BYTES, "response.result.model_label");
+    boundedText(
+      result.previous_model_label,
+      MAX_MODEL_LABEL_BYTES,
+      "response.result.previous_model_label",
+    );
+    boolean(result.changed, "response.result.changed");
+    boolean(result.confirmed, "response.result.confirmed");
+    if (
+      result.project_id !== requestPayload.project_id ||
+      result.chat_id !== requestPayload.chat_id ||
+      result.model_label !== requestPayload.model_label ||
+      result.confirmed !== true ||
+      result.changed !== (result.previous_model_label !== result.model_label)
+    ) {
+      throw new BoundaryError(
+        "INVALID_RESPONSE",
+        "Model selection result does not correlate to its request",
       );
     }
     return;

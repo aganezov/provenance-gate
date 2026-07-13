@@ -18,6 +18,7 @@
     "chat.new",
     "chat.open",
     "chat.inspect",
+    "model.select",
     "turn.submit_wait",
     "turn.wait",
     "approval.resolve"

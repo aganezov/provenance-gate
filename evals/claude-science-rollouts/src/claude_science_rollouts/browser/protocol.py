@@ -32,6 +32,7 @@ OPERATIONS = frozenset(
         "chat.new",
         "chat.open",
         "chat.inspect",
+        "model.select",
         "turn.submit_wait",
         "turn.wait",
         "approval.resolve",
@@ -60,6 +61,7 @@ _MAX_TURN_TEXT_BYTES = 16_384
 _MAX_PROMPT_BYTES = 65_536
 _MAX_PROJECT_NAME_BYTES = 640
 _MAX_SOURCE_PATH_BYTES = 4_096
+_MAX_MODEL_LABEL_BYTES = 128
 _CREDENTIAL_KEYS = frozenset(
     {"authorization", "cookie", "credential", "credentials", "password", "secret", "token"}
 )
@@ -170,6 +172,11 @@ def make_request(
         _identifier(body["chat_id"], "payload.chat_id")
         if "root_frame_id" in body:
             _identifier(body["root_frame_id"], "payload.root_frame_id")
+    if operation == "model.select":
+        _exact_keys(body, {"project_id", "chat_id", "model_label"}, set(), "payload")
+        _identifier(body["project_id"], "payload.project_id")
+        _identifier(body["chat_id"], "payload.chat_id")
+        _model_label(body["model_label"], "payload.model_label")
     if operation == "turn.submit_wait":
         _exact_keys(
             body,
@@ -328,6 +335,9 @@ def _validate_operation_result(
         ):
             raise BrowserProtocolError("Attachment result does not correlate to its request")
         return
+    if operation == "model.select":
+        _validate_model_selection(result, request_payload)
+        return
     if operation == "agent_context.inspect":
         _validate_context_observation(result)
         return
@@ -464,6 +474,29 @@ def _validate_context_observation(result: Mapping[str, Any]) -> None:
     if list(skills) != sorted(skills):
         raise BrowserProtocolError("Enabled skills must be sorted")
     _sha256(result["context_hash"], "response.result.context_hash")
+
+
+def _validate_model_selection(result: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
+    _exact_keys(
+        result,
+        {"project_id", "chat_id", "model_label", "previous_model_label", "changed", "confirmed"},
+        set(),
+        "response.result",
+    )
+    _identifier(result["project_id"], "response.result.project_id")
+    _identifier(result["chat_id"], "response.result.chat_id")
+    _model_label(result["model_label"], "response.result.model_label")
+    _model_label(result["previous_model_label"], "response.result.previous_model_label")
+    _boolean(result["changed"], "response.result.changed")
+    _boolean(result["confirmed"], "response.result.confirmed")
+    if (
+        result["project_id"] != payload["project_id"]
+        or result["chat_id"] != payload["chat_id"]
+        or result["model_label"] != payload["model_label"]
+        or result["confirmed"] is not True
+        or result["changed"] != (result["previous_model_label"] != result["model_label"])
+    ):
+        raise BrowserProtocolError("Model selection result does not correlate to its request")
 
 
 def _validate_turn_result(result: Mapping[str, Any]) -> None:
@@ -729,6 +762,13 @@ def _bounded_text(value: object, maximum_bytes: int, name: str) -> str:
     if not isinstance(value, str) or not value or len(value.encode()) > maximum_bytes:
         raise BrowserProtocolError(f"{name} must be bounded text")
     return value
+
+
+def _model_label(value: object, name: str) -> str:
+    label = _bounded_text(value, _MAX_MODEL_LABEL_BYTES, name)
+    if label.strip() != label or any(ord(char) < 32 or ord(char) == 127 for char in label):
+        raise BrowserProtocolError(f"{name} must be a trimmed control-free model label")
+    return label
 
 
 def _bounded_string(value: object, maximum_bytes: int, name: str) -> str:

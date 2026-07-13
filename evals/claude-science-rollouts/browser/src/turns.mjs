@@ -19,7 +19,19 @@ export function deliveryTextSha256(value) {
   return sha256Hex(normalizeVisibleText(value));
 }
 
+export function composerInsertionText(value) {
+  if (typeof value !== "string") throw new TypeError("Composer text must be a string");
+  return value.replace(/\r\n|[\n\r\u2028\u2029]/gu, " ");
+}
+
+export function originFromHttpUrl(value) {
+  if (typeof value !== "string") throw new TypeError("Page URL must be a string");
+  const match = value.match(/^(https?):\/\/(\[[^\]]+\]|[^/?#]+)(?=\/|[?#]|$)/u);
+  return match ? `${match[1]}://${match[2]}` : "";
+}
+
 const NORMALIZE_VISIBLE_TEXT_SOURCE = normalizeVisibleText.toString();
+const ORIGIN_FROM_HTTP_URL_SOURCE = originFromHttpUrl.toString();
 
 const COLLECT_TURN_OBSERVATION_SOURCE = `async (page) => {
   const locationState = await page.evaluate(() => {
@@ -112,11 +124,7 @@ const POLL_TURN_SOURCE = `async ({
     ) {
       fail("IDENTITY_MISMATCH");
     }
-    if (
-      !Array.isArray(observation.transcript) ||
-      !Array.isArray(observation.approval_cards) ||
-      !observation.signals
-    ) {
+    if (!Array.isArray(observation.approval_cards) || !observation.signals) {
       fail("MALFORMED_BROWSER_STATE");
     }
   };
@@ -154,6 +162,27 @@ const POLL_TURN_SOURCE = `async ({
   while (true) {
     const observation = await collect(page);
     verifyIdentity(observation);
+    if (observation.approval_cards.length > 1) fail("AMBIGUOUS_APPROVAL");
+    if (!Array.isArray(observation.transcript)) {
+      if (observation.approval_cards.length === 1) {
+        return incomplete("approval_required", observation, {
+          cards: observation.approval_cards,
+        });
+      }
+      // Delivery and all continuation identities were proved before entering
+      // this poll. The rooted turn surface may briefly hide both transcript and
+      // approval content while it hydrates. Poll read-only within the existing
+      // deadline; if it remains unavailable, return the proven continuation to
+      // Python instead of losing delivery evidence or replaying the submit.
+      if (Date.now() >= deadline) {
+        return incomplete(
+          observation.signals.busy ? "busy" : "indeterminate",
+          observation,
+        );
+      }
+      await page.waitForTimeout(400);
+      continue;
+    }
     const users = observation.transcript.filter((turn) => turn.role === "user");
     // Cost note: this re-hashes every baseline user turn each poll cycle — up to one
     // page.evaluate round-trip per baseline turn (bounded at 256) per ~400ms interval.
@@ -175,7 +204,6 @@ const POLL_TURN_SOURCE = `async ({
     if (users[users.length - 1]?.turn_id !== normalizedUserTurnId) {
       fail("DELIVERY_MISMATCH");
     }
-    if (observation.approval_cards.length > 1) fail("AMBIGUOUS_APPROVAL");
     if (observation.approval_cards.length === 1) {
       return incomplete("approval_required", observation, {
         cards: observation.approval_cards,
@@ -253,8 +281,10 @@ export function buildSubmitTurnSource({
   expectedDeliverySha256,
   deadlineMs,
 }) {
+  const insertionText = composerInsertionText(prompt);
   return `async (page) => {
     let mutationAttempted = false;
+    const originFromHttpUrl = ${ORIGIN_FROM_HTTP_URL_SOURCE};
     const collect = ${COLLECT_TURN_OBSERVATION_SOURCE};
     const normalizeVisibleText = ${NORMALIZE_VISIBLE_TEXT_SOURCE};
     const sha256 = async (value) => page.evaluate(async (text) => {
@@ -320,7 +350,7 @@ export function buildSubmitTurnSource({
           return false;
         }
         return document.execCommand("insertText", false, text);
-      }, ${JSON.stringify(prompt)});
+      }, ${JSON.stringify(insertionText)});
       if (!inserted) fail("MALFORMED_BROWSER_STATE");
       const send = page.getByRole("button", { name: "Send", exact: true });
       await send.waitFor({ state: "visible", timeout: 5000 });
@@ -334,8 +364,11 @@ export function buildSubmitTurnSource({
       while (Date.now() <= deliveryDeadline) {
         const current = await collect(page);
         if (current.origin !== ${JSON.stringify(origin)}) fail("NAVIGATION_DRIFT");
+        if (current.project_id !== ${JSON.stringify(projectId)}) {
+          fail("IDENTITY_MISMATCH");
+        }
         if (
-          current.project_id !== ${JSON.stringify(projectId)} ||
+          current.chat_id !== null &&
           current.chat_id !== ${JSON.stringify(chatId)}
         ) fail("IDENTITY_MISMATCH");
         if (observedRoot === null && current.root_frame_id !== null) {
@@ -348,7 +381,19 @@ export function buildSubmitTurnSource({
           current.root_project_id !== null &&
           current.root_project_id !== ${JSON.stringify(projectId)}
         ) fail("IDENTITY_MISMATCH");
-        if (!Array.isArray(current.transcript)) fail("MALFORMED_BROWSER_STATE");
+        // A new-root navigation can expose the exact URL before the active chat,
+        // root model, and transcript hydrate. Keep this reconciliation read-only
+        // and bounded by the delivery deadline; any observed conflicting identity
+        // still fails immediately, and delivery is not accepted until all three
+        // exact identities plus the transcript are available together.
+        if (
+          current.chat_id === null ||
+          current.root_project_id === null ||
+          !Array.isArray(current.transcript)
+        ) {
+          await page.waitForTimeout(100);
+          continue;
+        }
         const users = current.transcript.filter((turn) => turn.role === "user");
         for (const baseline of baselineUserTurns) {
           const match = users.find((turn) => turn.turn_id === baseline.turn_id);
@@ -397,7 +442,7 @@ export function buildSubmitTurnSource({
       };
     } catch (error) {
       return {
-        _origin: new URL(page.url()).origin,
+        _origin: originFromHttpUrl(page.url()),
         _mutation_attempted: mutationAttempted,
         _boundary_error: error?.boundaryCode ?? "MALFORMED_BROWSER_STATE",
       };
@@ -407,6 +452,7 @@ export function buildSubmitTurnSource({
 
 export function buildWaitTurnSource({ origin, continuation, deadlineMs }) {
   return `async (page) => {
+    const originFromHttpUrl = ${ORIGIN_FROM_HTTP_URL_SOURCE};
     try {
       const collect = ${COLLECT_TURN_OBSERVATION_SOURCE};
       const before = await collect(page);
@@ -440,7 +486,7 @@ export function buildWaitTurnSource({ origin, continuation, deadlineMs }) {
       return { _origin: resultOrigin, result: publicResult };
     } catch (error) {
       return {
-        _origin: new URL(page.url()).origin,
+        _origin: originFromHttpUrl(page.url()),
         _boundary_error: error?.boundaryCode ?? "MALFORMED_BROWSER_STATE",
       };
     }
@@ -458,6 +504,7 @@ export function buildResolveApprovalSource({
 }) {
   return `async (page) => {
     let mutationAttempted = false;
+    const originFromHttpUrl = ${ORIGIN_FROM_HTTP_URL_SOURCE};
     const collect = ${COLLECT_TURN_OBSERVATION_SOURCE};
     try {
       const before = await collect(page);
@@ -486,7 +533,9 @@ export function buildResolveApprovalSource({
       }
       const card = cards.nth(0);
       const control = ${JSON.stringify(decision)} === "allow_for_conversation"
-        ? card.getByRole("button", { name: /^Allow\\s+for this conversation$/i })
+        ? card.getByRole("button", {
+            name: /^Allow(?:\\s+for chat)?\\s+for this conversation$/i,
+          })
         : card.getByRole("button", { name: /^Deny$/i });
       const deny = card.getByRole("button", { name: /^Deny$/i });
       if (await control.count() !== 1 || await deny.count() !== 1) {
@@ -529,7 +578,7 @@ export function buildResolveApprovalSource({
       };
     } catch (error) {
       return {
-        _origin: new URL(page.url()).origin,
+        _origin: originFromHttpUrl(page.url()),
         _mutation_attempted: mutationAttempted,
         _boundary_error: error?.boundaryCode ?? "APPROVAL_NOT_CLEARED",
       };

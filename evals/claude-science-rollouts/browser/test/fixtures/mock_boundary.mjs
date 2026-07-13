@@ -60,6 +60,14 @@ const handlers = {
     current_turn_state: "indeterminate",
     approval_cards: [],
   }),
+  "model.select": async (payload) => ({
+    project_id: payload.project_id,
+    chat_id: payload.chat_id,
+    model_label: payload.model_label,
+    previous_model_label: "Research Default",
+    changed: payload.model_label !== "Research Default",
+    confirmed: true,
+  }),
   "chat.inspect": async (payload) => ({
     project_id: payload.project_id,
     chat_id: payload.chat_id,

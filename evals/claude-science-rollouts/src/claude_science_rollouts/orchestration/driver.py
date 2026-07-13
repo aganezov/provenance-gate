@@ -13,6 +13,7 @@ from .models import (
     ContextObservation,
     ContextUpdate,
     Detached,
+    ModelSelection,
     Outcome,
     ProjectObservation,
     RootMode,
@@ -102,6 +103,16 @@ class BrowserDriver(Protocol):
         request_id: str,
         deadline_ms: int,
     ) -> Outcome[AttachmentAccepted]: ...
+
+    def select_model(
+        self,
+        project_id: str,
+        chat_id: str,
+        model_label: str,
+        *,
+        request_id: str,
+        deadline_ms: int,
+    ) -> Outcome[ModelSelection]: ...
 
     def update_enabled_skills(
         self,

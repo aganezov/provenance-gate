@@ -389,6 +389,28 @@ class BrowserClient:
             parser=_attachment_accepted,
         )
 
+    def select_model(
+        self,
+        project_id: str,
+        chat_id: str,
+        model_label: str,
+        *,
+        request_id: str,
+        deadline_ms: int = 15_000,
+    ) -> BrowserOperationOutcome[ModelSelection]:
+        """Select and confirm one exact model on a verified blank chat."""
+        return self._typed_operation(
+            "model.select",
+            payload={
+                "project_id": project_id,
+                "chat_id": chat_id,
+                "model_label": model_label,
+            },
+            request_id=request_id,
+            deadline_ms=deadline_ms,
+            parser=_model_selection,
+        )
+
     def submit_turn_wait(
         self,
         project_id: str,
@@ -712,6 +734,24 @@ class BrowserSession:
             deadline_ms=deadline_ms,
         )
 
+    def select_model(
+        self,
+        project_id: str,
+        chat_id: str,
+        model_label: str,
+        *,
+        request_id: str,
+        deadline_ms: int = 15_000,
+    ) -> BrowserOperationOutcome[ModelSelection]:
+        self._require_attached()
+        return self.client.select_model(
+            project_id,
+            chat_id,
+            model_label,
+            request_id=request_id,
+            deadline_ms=deadline_ms,
+        )
+
     def submit_turn_wait(
         self,
         project_id: str,
@@ -840,6 +880,17 @@ def _attachment_accepted(result: Mapping[str, Any]) -> AttachmentAccepted:
         chat_id=result["chat_id"],
         filename=result["filename"],
         accepted=result["accepted"],
+    )
+
+
+def _model_selection(result: Mapping[str, Any]) -> ModelSelection:
+    return ModelSelection(
+        project_id=result["project_id"],
+        chat_id=result["chat_id"],
+        model_label=result["model_label"],
+        previous_model_label=result["previous_model_label"],
+        changed=result["changed"],
+        confirmed=result["confirmed"],
     )
 
 

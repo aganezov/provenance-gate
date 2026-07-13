@@ -362,6 +362,54 @@ def test_g3c_requests_are_exact_and_source_path_is_request_only() -> None:
         )
 
 
+def test_model_select_request_and_result_are_exact_and_correlated() -> None:
+    select = make_request(
+        "model.select",
+        request_id="model-001",
+        session_id="session-001",
+        origin="http://127.0.0.1:8875",
+        deadline_ms=15_000,
+        payload={
+            "project_id": "project-001",
+            "chat_id": "chat-001",
+            "model_label": "Research Fast",
+        },
+    )
+    assert select.payload["model_label"] == "Research Fast"
+    with pytest.raises(BrowserProtocolError, match="model label"):
+        make_request(
+            "model.select",
+            request_id="model-002",
+            session_id="session-001",
+            origin="http://127.0.0.1:8875",
+            deadline_ms=15_000,
+            payload={"project_id": "project-001", "chat_id": "chat-001", "model_label": " padded "},
+        )
+    result = {
+        "project_id": "project-001",
+        "chat_id": "chat-001",
+        "model_label": "Research Fast",
+        "previous_model_label": "Research Default",
+        "changed": True,
+        "confirmed": True,
+    }
+    response = {
+        "protocol_version": 1,
+        "request_id": "model-001",
+        "operation": "model.select",
+        "outcome": "completed",
+        "elapsed_ms": 1,
+        "result": result,
+    }
+    parsed = parse_response(json.dumps(response), select)
+    assert parsed.result is not None
+    assert parsed.result["previous_model_label"] == "Research Default"
+    # a confirmed selection whose flag contradicts the observed label change is rejected.
+    result["changed"] = False
+    with pytest.raises(BrowserProtocolError, match="correlate"):
+        parse_response(json.dumps(response), select)
+
+
 def test_typed_g3b_submit_continuation_wait_and_approval(tmp_path: Path) -> None:
     node = shutil.which("node")
     if node is None:
