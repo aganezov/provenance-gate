@@ -14,6 +14,8 @@ dist/
 
 # Runtime / scratch
 *.db
+# ...but keep the one committed demo capture (the loop-closure example) tracked:
+!evals/claude-science-rollouts/examples/pbmc-version-mix/project.db
 # gate per-project state dir (sidecars + append-only logs) — set PG_STATE_DIR to relocate
 .pg/
 .playwright-mcp/
