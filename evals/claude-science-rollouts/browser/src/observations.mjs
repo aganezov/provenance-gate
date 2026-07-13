@@ -1,5 +1,16 @@
 const MAX_TURN_TEXT_BYTES = 16384;
 
+// The scheme://host origin of an http(s) URL — IPv6-bracket aware — or "" when the URL has none.
+// One definition, injected into every browser-source builder, so the origin echoed on error paths
+// is computed identically everywhere (the boundary compares it to the expected session origin).
+export function originFromHttpUrl(value) {
+  if (typeof value !== "string") throw new TypeError("Page URL must be a string");
+  const match = value.match(/^(https?):\/\/(\[[^\]]+\]|[^/?#]+)(?=\/|[?#]|$)/u);
+  return match ? `${match[1]}://${match[2]}` : "";
+}
+
+export const ORIGIN_FROM_HTTP_URL_SOURCE = originFromHttpUrl.toString();
+
 export function classifyObservedTurnState({
   busy,
   approvalCardCount,
@@ -13,7 +24,30 @@ export function classifyObservedTurnState({
   return "indeterminate";
 }
 
-function pageObservationHelpers() {
+export function approvalControlKind(value) {
+  if (typeof value !== "string") return null;
+  const normalized = value.replace(/\s+/gu, " ").trim().toLowerCase();
+  const compact = normalized.replace(/\s+/gu, "");
+  if (
+    /^(approve|allow)(?:\s|$)/u.test(normalized) ||
+    /^allow(?:forchat)?forthisconversation$/u.test(compact)
+  ) {
+    return "allow";
+  }
+  if (/^(deny|reject)(?:\s|$)/u.test(normalized)) return "deny";
+  return null;
+}
+
+export function approvalCardTitle(value) {
+  if (typeof value !== "string") return "";
+  return value
+    .split(/\r?\n/gu)
+    .map((line) => line.replace(/\s+/gu, " ").trim())
+    .find(Boolean)
+    ?.slice(0, 512) ?? "";
+}
+
+function pageObservationHelpers(classifyApprovalControl, extractApprovalTitle) {
   const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 
   const isVisible = (element) => {
@@ -234,40 +268,25 @@ function pageObservationHelpers() {
   };
 
   const approvalCards = async () => {
-    const main = document.querySelector('main,[role="main"]') ?? document.body;
-    const allowControls = visibleElements(main, "button").filter((button) =>
-      /^(Approve|Allow)(?:\s|$)/i.test(
-        button.getAttribute("aria-label") ?? button.textContent ?? "",
-      ),
-    );
+    const cardElements = visibleElements(document, '[data-testid="approval-card"]');
     const cards = [];
-    for (const [index, control] of allowControls.entries()) {
-      let card = control.parentElement;
-      let cardFound = false;
-      for (let depth = 0; card && depth < 8; depth += 1) {
-        const buttons = visibleElements(card, "button");
-        const hasDeny = buttons.some((button) =>
-          /^(Deny|Reject)(?:\s|$)/i.test(
-            button.getAttribute("aria-label") ?? button.textContent ?? "",
-          ),
-        );
-        if (hasDeny) {
-          cardFound = true;
-          break;
-        }
-        card = card.parentElement;
+    for (const [index, card] of cardElements.entries()) {
+      const controlKinds = visibleElements(card, "button").map((control) =>
+        classifyApprovalControl(
+          control.getAttribute("aria-label") ?? control.textContent ?? "",
+        ));
+      const title = extractApprovalTitle(card.innerText ?? card.textContent ?? "");
+      // Surface only an actionable card: a live allow AND deny control (CS may render more than one
+      // allow variant, e.g. "Allow" plus "Allow for this conversation" — the resolver picks the one
+      // it wants) with a title. A resolved or historical card that keeps the testid but has no live
+      // pair is skipped, not treated as malformed state that would poison the whole observation.
+      if (
+        !controlKinds.includes("allow") ||
+        !controlKinds.includes("deny") ||
+        !title
+      ) {
+        continue;
       }
-      // Only a container that actually holds the Deny control is the card. If the walk
-      // exhausts its depth budget without one, `card` is an arbitrary ancestor — reject
-      // rather than extract a heading from the wrong element.
-      if (!cardFound || !card) return null;
-      const headings = visibleElements(card, 'h1,h2,h3,h4,[role="heading"]');
-      if (headings.length !== 1) return null;
-      const title = (headings[0].textContent ?? "")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 512);
-      if (!title) return null;
       const fingerprint = await sha256(`approval\n${title}`);
       cards.push({
         card_id: `approval:${fingerprint.slice(0, 32)}:${index}`,
@@ -312,7 +331,12 @@ function pageObservationHelpers() {
   };
 }
 
-export const PAGE_OBSERVATION_HELPERS_SOURCE = pageObservationHelpers.toString();
+export const PAGE_OBSERVATION_HELPERS_SOURCE = `() => (
+  ${pageObservationHelpers.toString()}
+)(
+  ${approvalControlKind.toString()},
+  ${approvalCardTitle.toString()}
+)`;
 const HELPERS = PAGE_OBSERVATION_HELPERS_SOURCE;
 const CLASSIFY_TURN_STATE = classifyObservedTurnState.toString();
 

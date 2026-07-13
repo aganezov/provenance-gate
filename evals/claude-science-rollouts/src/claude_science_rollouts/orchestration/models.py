@@ -64,6 +64,45 @@ def _non_negative_integer(value: object, name: str) -> None:
         raise ValueError(f"{name} must be a non-negative integer")
 
 
+def bounded_label(value: object) -> bool:
+    """A non-empty, trimmed, ≤128-byte string with no control characters — the shape a model label
+    and the run's bounded text parameters share, so both boundaries validate it one way."""
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value.strip() == value
+        and len(value.encode()) <= 128
+        and not any(ord(character) < 32 or ord(character) == 127 for character in value)
+    )
+
+
+def _model_label(value: object, name: str) -> None:
+    if not bounded_label(value):
+        raise ValueError(f"{name} must be a bounded model label")
+
+
+@dataclass(frozen=True, slots=True)
+class ModelSelection:
+    """The model a chat is set to, and whether selecting it changed and confirmed the setting."""
+
+    project_id: str
+    chat_id: str
+    model_label: str
+    previous_model_label: str
+    changed: bool
+    confirmed: bool
+
+    def __post_init__(self) -> None:
+        _identifier(self.project_id, "project_id")
+        _identifier(self.chat_id, "chat_id")
+        _model_label(self.model_label, "model_label")
+        _model_label(self.previous_model_label, "previous_model_label")
+        _boolean(self.changed, "changed")
+        _boolean(self.confirmed, "confirmed")
+        if self.changed != (self.previous_model_label != self.model_label):
+            raise ValueError("changed must reflect whether the model label changed")
+
+
 @dataclass(frozen=True, slots=True)
 class Timing:
     boundary_elapsed_ms: int

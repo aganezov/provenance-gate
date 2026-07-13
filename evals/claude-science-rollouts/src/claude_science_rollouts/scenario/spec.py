@@ -13,9 +13,16 @@ approval policy is deny-by-default.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+# A checkpoint id becomes a path component of its persisted snapshot (snapshots/checkpoints/<id>/),
+# so it must be a filesystem-safe slug: letters, digits, '-' and '_', with an alphanumeric start.
+# This forbids separators and dot-segments (e.g. '../final'), which containment checks downstream
+# would otherwise let escape the checkpoints directory.
+_SAFE_CHECKPOINT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 
 SCHEMA_VERSION = 1
 _MODES = frozenset({"gate", "measure"})
@@ -65,6 +72,9 @@ class ResponseRule:
     after_turn_id: str
     trigger: str
     reply: str
+    # scenario vocabulary the trigger looks for, so the orchestrator stays scenario-agnostic —
+    # the terms live with the scenario, not hardcoded in the harness.
+    match_terms: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +238,11 @@ def _checkpoint(cp: Any, turn_ids: set[str], index: int) -> str:
     if not isinstance(cp, dict):
         raise ScenarioError(f"{ctx} must be an object")
     cp_id = _str(cp.get("id"), f"{ctx}.id")
+    if not _SAFE_CHECKPOINT_ID.fullmatch(cp_id):
+        raise ScenarioError(
+            f"{ctx}.id must be a filesystem-safe slug (letters, digits, '-', '_'; "
+            f"no separators or dots): {cp_id!r}"
+        )
     if cp.get("mode", "gate") not in _MODES:
         raise ScenarioError(f"{ctx}.mode must be one of {sorted(_MODES)}")
     if cp.get("after_turn_id") not in turn_ids:
@@ -303,11 +318,21 @@ def load_scenario(path: str | Path) -> Scenario:
         after = _str(r.get("after_turn_id"), f"response_rules[{i}].after_turn_id")
         if after not in turn_ids:
             raise ScenarioError(f"response_rules[{i}].after_turn_id must name a construction turn")
+        terms = r.get("match_terms")
+        if (
+            not isinstance(terms, list)
+            or not terms
+            or not all(isinstance(t, str) and t for t in terms)
+        ):
+            raise ScenarioError(
+                f"response_rules[{i}].match_terms must be a non-empty array of strings"
+            )
         rules.append(ResponseRule(
             id=rid,
             after_turn_id=after,
             trigger=_str(r.get("trigger"), f"response_rules[{i}].trigger"),
             reply=_str(r.get("reply"), f"response_rules[{i}].reply"),
+            match_terms=tuple(terms),
         ))
 
     return Scenario(

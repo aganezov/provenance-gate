@@ -1,9 +1,18 @@
-"""Episode executor connecting compiled scenarios to runtime operations and evidence."""
+"""Episode executor connecting compiled scenarios to runtime operations and persisted evidence.
+
+The driver proves a turn reached a terminal shape in the browser; the database proves what that turn
+actually persisted. This module drives the compiled plan and, at each settle point, reads the frozen
+operon back to bind every turn to the exact bytes it committed — the terminal prose, or the single
+input request it paused on. The browser observation stays authoritative for *why* the episode stops;
+the persisted read is supplementary evidence folded into the manifest, and it fails closed when a
+settled turn cannot be proven against the database.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,10 +20,20 @@ from typing import Any
 
 from claude_science_rollouts.capture.evidence import EpisodeEvidence, file_sha256
 from claude_science_rollouts.oracle.snapshot import open_readonly
+from claude_science_rollouts.persistence.project_snapshot import (
+    ProjectSnapshot,
+    materialize_project_snapshot,
+)
+from claude_science_rollouts.persistence.responses import (
+    PersistedInputRequest,
+    PersistedResponse,
+    PersistedResponseError,
+    PersistedResponseReader,
+)
 from claude_science_rollouts.persistence.snapshots import (
     SnapshotBarrierConfig,
-    StableSnapshot,
     await_stable_project_snapshot,
+    observe_project_settled,
 )
 from claude_science_rollouts.scenario.checkpoints import evaluate_checkpoints
 from claude_science_rollouts.scenario.compiler import Step, compile_scenario
@@ -22,12 +41,18 @@ from claude_science_rollouts.scenario.spec import ResponseRule, Scenario
 
 from .driver import BrowserDriver
 from .models import ChatObservation, Outcome
-from .r1 import (
-    R1ApprovalBudget,
-    R1ApprovalPolicy,
-    R1Execution,
-    R1TurnRequest,
-    run_r1_turn,
+from .prose import (
+    ProseInterpretationError,
+    ProseInterpretationRequest,
+    ProseInterpreter,
+    decide_interpretation,
+)
+from .turn import (
+    TurnApprovalBudget,
+    TurnApprovalPolicy,
+    TurnExecution,
+    TurnRequest,
+    run_turn,
 )
 
 
@@ -41,6 +66,11 @@ class EpisodeConfig:
     trial_variant: str = "bare"
     deadline_ms: int = 120_000
     snapshot: SnapshotBarrierConfig = SnapshotBarrierConfig()
+    # A checkpoint always evaluates and records; this only decides whether a failed GATE-mode
+    # checkpoint also stops the rollout. Generation leaves it off — a divergence is captured and
+    # the run continues so a post-hoc grader sees the whole rollout — while the gate-mode
+    # declaration and the stop path in _evaluate_gate stay as a disabled early-stop capability.
+    halt_on_checkpoint_gate: bool = False
 
     def __post_init__(self) -> None:
         if not self.episode_id or not self.project_id:
@@ -67,9 +97,9 @@ class _EpisodeStop(RuntimeError):
         self.reason = reason
 
 
-def approval_policy_for_scenario(scenario: Scenario) -> R1ApprovalPolicy:
-    """Map validated scenario policy into the runtime-owned R1 bound."""
-    return R1ApprovalPolicy(
+def approval_policy_for_scenario(scenario: Scenario) -> TurnApprovalPolicy:
+    """Map validated scenario policy into the runtime-owned approval bound."""
+    return TurnApprovalPolicy(
         scenario.approval_policy.action,
         scenario.approval_policy.max_approvals,
     )
@@ -80,8 +110,8 @@ def _prompt_sha256(prompt: str) -> str:
 
 
 def _outcome_reason(prefix: str, outcome: Outcome[Any]) -> str:
-    if outcome.outcome == "completed":
-        return f"{prefix}_invalid_result"
+    # only reached for a non-completed outcome (the caller handles completed), so the state here is
+    # "not_started" or "unknown_outcome".
     return f"{prefix}_{outcome.outcome}"
 
 
@@ -90,6 +120,17 @@ def _require_completed(prefix: str, outcome: Outcome[Any]) -> Any:
         raise _EpisodeStop(_outcome_reason(prefix, outcome))
     assert outcome.result is not None
     return outcome.result
+
+
+def _record_step_outcome(step_record: dict[str, Any], outcome: Outcome[Any]) -> None:
+    """Fold a sanitized boundary error into a step record so failures survive compact evidence."""
+    error = outcome.error
+    if error is not None:
+        step_record["error"] = {
+            "code": error.code,
+            "retryable": error.retryable,
+            "evidence": dict(error.evidence),
+        }
 
 
 def matches_response_rule(rule: ResponseRule, observation: ChatObservation) -> bool:
@@ -102,11 +143,53 @@ def matches_response_rule(rule: ResponseRule, observation: ChatObservation) -> b
     if latest_assistant is None or latest_assistant.truncated:
         return False
     assistant_text = latest_assistant.text.lower()
-    branch_terms = ("sibling", "composition", "cytotoxic", "qc summary", "panel")
-    return "regenerate" in assistant_text and any(term in assistant_text for term in branch_terms)
+    return "regenerate" in assistant_text and any(
+        term.lower() in assistant_text for term in rule.match_terms
+    )
 
 
-def _turn_record(turn_id: str, execution: R1Execution) -> dict[str, Any]:
+def _persisted_response_record(
+    persisted: PersistedResponse | None,
+) -> dict[str, Any] | None:
+    if persisted is None:
+        return None
+    return {
+        "user_turn_id": persisted.user_turn_id,
+        "user_text_sha256": persisted.user_text_sha256,
+        "assistant_message_id": persisted.assistant_message_id,
+        "assistant_text": persisted.assistant_text,
+        "assistant_text_sha256": persisted.assistant_text_sha256,
+        "stability_attempts": persisted.stability_attempts,
+        "root_model_identifier": persisted.root_model_identifier,
+    }
+
+
+def _persisted_input_request_record(
+    pending_input: PersistedInputRequest | None,
+) -> dict[str, Any] | None:
+    if pending_input is None:
+        return None
+    return {
+        "user_turn_id": pending_input.user_turn_id,
+        "user_text_sha256": pending_input.user_text_sha256,
+        "assistant_message_id": pending_input.assistant_message_id,
+        "assistant_text": pending_input.assistant_text,
+        "input_request_id": pending_input.input_request_id,
+        "input_request_name": pending_input.input_request_name,
+        "input_payload": pending_input.input_payload,
+        "input_payload_sha256": pending_input.input_payload_sha256,
+        "stability_attempts": pending_input.stability_attempts,
+        "root_model_identifier": pending_input.root_model_identifier,
+        "root_status": pending_input.root_status,
+    }
+
+
+def _turn_record(
+    turn_id: str,
+    execution: TurnExecution,
+    persisted: PersistedResponse | None = None,
+    pending_input: PersistedInputRequest | None = None,
+) -> dict[str, Any]:
     final = execution.final
     result = final.result
     delivery = result.delivery if result is not None else None
@@ -136,10 +219,38 @@ def _turn_record(turn_id: str, execution: R1Execution) -> dict[str, Any]:
             for resolution in execution.approval_resolutions
         ],
         "wait_count": execution.wait_count,
+        "persisted_response": _persisted_response_record(persisted),
+        "persisted_input_request": _persisted_input_request_record(pending_input),
     }
 
 
-def _turn_stop_reason(execution: R1Execution) -> str | None:
+_SAFE_PATH_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+def _reduced_snapshot_path(run_dir: Path, *parts: str) -> Path:
+    """A destination under ``run_dir/snapshots`` that no symlink can redirect outside the run. Every
+    segment must be a filesystem-safe slug — no separators, no dot-segments — checked before any
+    directory is created, so a stray label can't mkdir or escape outside the snapshots tree."""
+    for part in parts:
+        if not _SAFE_PATH_SEGMENT.fullmatch(part):
+            raise ValueError(f"snapshot path segment is not a safe slug: {part!r}")
+    run_root = run_dir.resolve()
+    current = run_dir / "snapshots"
+    for part in parts[:-1]:
+        if current.is_symlink():
+            raise ValueError(f"snapshot directory cannot be a symlink: {current}")
+        current.mkdir(parents=True, exist_ok=True)
+        current = current / part
+    if current.is_symlink():
+        raise ValueError(f"snapshot directory cannot be a symlink: {current}")
+    current.mkdir(parents=True, exist_ok=True)
+    destination = current / parts[-1]
+    if not destination.resolve().is_relative_to(run_root):
+        raise ValueError(f"snapshot path must remain inside run directory: {destination}")
+    return destination
+
+
+def _turn_stop_reason(execution: TurnExecution) -> str | None:
     if execution.final.outcome != "completed":
         return f"turn_{execution.final.outcome}"
     if execution.stop_reason != "settled":
@@ -148,26 +259,41 @@ def _turn_stop_reason(execution: R1Execution) -> str | None:
 
 
 class EpisodeExecutor:
-    """Execute one compiled scenario and own its finalization boundary."""
+    """Execute one compiled scenario, capture its persisted evidence, and own finalization."""
 
-    def __init__(self, driver: BrowserDriver) -> None:
+    def __init__(
+        self,
+        driver: BrowserDriver,
+        response_reader: PersistedResponseReader,
+        prose_interpreter: ProseInterpreter | None = None,
+    ) -> None:
         self.driver = driver
+        self.response_reader = response_reader
+        self.prose_interpreter = prose_interpreter
 
     async def run(self, scenario: Scenario, config: EpisodeConfig) -> EpisodeResult:
         evidence = EpisodeEvidence(scenario.scenario_id, config.project_id)
         plan = compile_scenario(scenario, trial=config.trial_variant)
         policy = approval_policy_for_scenario(scenario)
-        approval_budget = R1ApprovalBudget.from_policy(policy)
+        approval_budget = TurnApprovalBudget.from_policy(policy)
         chats: dict[str, str] = {}
         roots: dict[str, str] = {}
         checkpoint_by_id = {item["id"]: item for item in scenario.checkpoints}
         rules_after: dict[str, list[ResponseRule]] = {}
         for rule in scenario.response_rules:
             rules_after.setdefault(rule.after_turn_id, []).append(rule)
+        # authored prompt for every turn the run can end on — submit steps and deterministic rule
+        # replies — so whichever turn is last can be rebound to the immutable final snapshot.
+        turn_prompts = {
+            step.turn_id: step.prompt for step in plan if step.op == "submit" and step.prompt
+        }
+        for rules in rules_after.values():
+            for rule in rules:
+                turn_prompts[f"rule.{rule.id}"] = rule.reply
 
         terminal_reason = "completed"
         pending_error: BaseException | None = None
-        final_snapshot: StableSnapshot | None = None
+        final_snapshot: ProjectSnapshot | None = None
         manifest_path: Path | None = None
         detach_outcome: str | None = None
         try:
@@ -201,17 +327,11 @@ class EpisodeExecutor:
             pending_error = exc
         finally:
             try:
-                final_snapshot = await await_stable_project_snapshot(
-                    config.source_db,
-                    config.project_id,
-                    config.run_dir,
-                    config=config.snapshot,
+                final_snapshot, final_attempts = await self._materialize_final_snapshot(config)
+                self._regrade_final_turn(
+                    turn_prompts, evidence, config, final_snapshot, final_attempts
                 )
-                evidence.record_snapshot(
-                    final_snapshot.path,
-                    config.run_dir,
-                    final_snapshot.attempts,
-                )
+                evidence.record_snapshot(final_snapshot.path, config.run_dir, final_attempts)
             except BaseException as exc:
                 if pending_error is None:
                     pending_error = exc
@@ -265,7 +385,7 @@ class EpisodeExecutor:
         scenario: Scenario,
         plan: tuple[Step, ...],
         config: EpisodeConfig,
-        approval_budget: R1ApprovalBudget,
+        approval_budget: TurnApprovalBudget,
         chats: dict[str, str],
         roots: dict[str, str],
         checkpoint_by_id: dict[str, dict[str, Any]],
@@ -273,47 +393,23 @@ class EpisodeExecutor:
         evidence: EpisodeEvidence,
     ) -> None:
         for step in plan:
-            evidence.steps.append(
-                {
-                    "index": len(evidence.steps),
-                    "op": step.op,
-                    "session": step.session,
-                    "turn_id": step.turn_id,
-                    "checkpoint_id": step.checkpoint_id,
-                }
-            )
+            step_record = {
+                "index": len(evidence.steps),
+                "op": step.op,
+                "session": step.session,
+                "turn_id": step.turn_id,
+                "checkpoint_id": step.checkpoint_id,
+            }
+            evidence.steps.append(step_record)
             if step.op in {"new_chat", "open_chat"}:
-                self._focus_chat(step, config, chats)
+                self._focus_chat(step, config, chats, step_record)
             elif step.op == "attach":
-                self._upload_fixture(step, config, chats)
+                self._upload_fixture(step, config, chats, step_record)
             elif step.op == "submit":
                 assert step.session and step.turn_id and step.prompt is not None
-                execution = self._run_turn(
-                    step.session,
-                    step.turn_id,
-                    step.prompt,
-                    config,
-                    approval_budget,
-                    chats,
-                    roots,
+                await self._run_submit(
+                    step, config, approval_budget, chats, roots, rules_after, evidence
                 )
-                evidence.turns.append(_turn_record(step.turn_id, execution))
-                stop = _turn_stop_reason(execution)
-                if stop:
-                    raise _EpisodeStop(stop)
-                result = execution.final.result
-                assert result is not None
-                roots[step.session] = result.root_frame_id
-                for rule in rules_after.get(step.turn_id, []):
-                    self._apply_response_rule(
-                        rule,
-                        step.session,
-                        config,
-                        approval_budget,
-                        chats,
-                        roots,
-                        evidence,
-                    )
             elif step.op == "gate":
                 assert step.checkpoint_id
                 await self._evaluate_gate(
@@ -322,8 +418,61 @@ class EpisodeExecutor:
             else:
                 raise ValueError(f"unsupported compiled step: {step.op}")
 
+    async def _run_submit(
+        self,
+        step: Step,
+        config: EpisodeConfig,
+        approval_budget: TurnApprovalBudget,
+        chats: dict[str, str],
+        roots: dict[str, str],
+        rules_after: dict[str, list[ResponseRule]],
+        evidence: EpisodeEvidence,
+    ) -> None:
+        assert step.session and step.turn_id and step.prompt is not None
+        execution = self._run_turn(
+            step.session, step.turn_id, step.prompt, config, approval_budget, chats, roots
+        )
+        stop = _turn_stop_reason(execution)
+        persisted: PersistedResponse | None = None
+        pending_input: PersistedInputRequest | None = None
+        if stop is None:
+            # a settled turn must prove its terminal prose against the frozen DB or fail closed.
+            try:
+                persisted = await self._read_persisted_response(execution, config, step.prompt)
+            except _EpisodeStop as exc:
+                stop = exc.reason
+        elif self._paused_on_input_request(execution):
+            # capture the pending ask, but keep the browser-observed terminal reason authoritative.
+            try:
+                pending_input = await self._read_persisted_input_request(
+                    execution, config, step.prompt
+                )
+            except _EpisodeStop:
+                pending_input = None
+        evidence.turns.append(_turn_record(step.turn_id, execution, persisted, pending_input))
+        if stop:
+            raise _EpisodeStop(stop)
+        result = execution.final.result
+        assert result is not None
+        roots[step.session] = result.root_frame_id
+        rules = rules_after.get(step.turn_id, [])
+        if rules:
+            assert persisted is not None
+            await self._apply_response_rules(
+                rules, step.session, config, approval_budget, chats, roots, evidence, persisted
+            )
+
+    @staticmethod
+    def _paused_on_input_request(execution: TurnExecution) -> bool:
+        result = execution.final.result
+        return result is not None and result.turn_state == "input_required"
+
     def _focus_chat(
-        self, step: Step, config: EpisodeConfig, chats: dict[str, str]
+        self,
+        step: Step,
+        config: EpisodeConfig,
+        chats: dict[str, str],
+        step_record: dict[str, Any],
     ) -> None:
         assert step.session
         request_id = f"{config.episode_id}.chat.{step.session}"
@@ -343,6 +492,7 @@ class EpisodeExecutor:
                 request_id=request_id,
                 deadline_ms=config.deadline_ms,
             )
+        _record_step_outcome(step_record, outcome)
         observation = _require_completed("chat", outcome)
         if observation.project_id != config.project_id:
             raise _EpisodeStop("chat_project_mismatch")
@@ -355,7 +505,11 @@ class EpisodeExecutor:
         chats[step.session] = observation.chat_id
 
     def _upload_fixture(
-        self, step: Step, config: EpisodeConfig, chats: dict[str, str]
+        self,
+        step: Step,
+        config: EpisodeConfig,
+        chats: dict[str, str],
+        step_record: dict[str, Any],
     ) -> None:
         assert step.session
         if config.fixture_path is None:
@@ -374,6 +528,7 @@ class EpisodeExecutor:
             request_id=f"{config.episode_id}.fixture",
             deadline_ms=config.deadline_ms,
         )
+        _record_step_outcome(step_record, outcome)
         accepted = _require_completed("attachment", outcome)
         if (
             accepted.project_id != config.project_id
@@ -390,14 +545,14 @@ class EpisodeExecutor:
         turn_id: str,
         prompt: str,
         config: EpisodeConfig,
-        approval_budget: R1ApprovalBudget,
+        approval_budget: TurnApprovalBudget,
         chats: dict[str, str],
         roots: dict[str, str],
-    ) -> R1Execution:
+    ) -> TurnExecution:
         root = roots.get(session)
-        return run_r1_turn(
+        return run_turn(
             self.driver,
-            R1TurnRequest(
+            TurnRequest(
                 project_id=config.project_id,
                 chat_id=chats[session],
                 root_mode="existing" if root else "new",
@@ -410,12 +565,77 @@ class EpisodeExecutor:
             approval_budget=approval_budget,
         )
 
-    def _apply_response_rule(
+    async def _read_persisted_response(
+        self,
+        execution: TurnExecution,
+        config: EpisodeConfig,
+        authored_prompt: str,
+    ) -> PersistedResponse:
+        result = execution.final.result
+        assert result is not None and result.delivery is not None
+        try:
+            return await self.response_reader.read(
+                source_db=config.source_db,
+                work_dir=config.run_dir / ".response-work",
+                project_id=config.project_id,
+                root_frame_id=result.root_frame_id,
+                user_turn_id=result.delivery.normalized_user_turn_id,
+                authored_prompt=authored_prompt,
+                authored_prompt_sha256=result.delivery.authored_prompt_sha256,
+                config=config.snapshot,
+            )
+        except (PersistedResponseError, TimeoutError) as exc:
+            raise _EpisodeStop("persisted_response_unproven") from exc
+
+    async def _read_persisted_input_request(
+        self,
+        execution: TurnExecution,
+        config: EpisodeConfig,
+        authored_prompt: str,
+    ) -> PersistedInputRequest:
+        result = execution.final.result
+        assert result is not None and result.delivery is not None
+        try:
+            return await self.response_reader.read_input_request(
+                source_db=config.source_db,
+                work_dir=config.run_dir / ".response-work",
+                project_id=config.project_id,
+                root_frame_id=result.root_frame_id,
+                user_turn_id=result.delivery.normalized_user_turn_id,
+                authored_prompt=authored_prompt,
+                authored_prompt_sha256=result.delivery.authored_prompt_sha256,
+                config=config.snapshot,
+            )
+        except (PersistedResponseError, TimeoutError) as exc:
+            raise _EpisodeStop("persisted_input_request_unproven") from exc
+
+    async def _apply_response_rules(
+        self,
+        rules: list[ResponseRule],
+        session: str,
+        config: EpisodeConfig,
+        approval_budget: TurnApprovalBudget,
+        chats: dict[str, str],
+        roots: dict[str, str],
+        evidence: EpisodeEvidence,
+        persisted: PersistedResponse,
+    ) -> None:
+        if self.prose_interpreter is None:
+            for rule in rules:
+                await self._apply_deterministic_rule(
+                    rule, session, config, approval_budget, chats, roots, evidence
+                )
+            return
+        await self._apply_prose_policy(
+            rules, session, config, approval_budget, chats, roots, evidence, persisted
+        )
+
+    async def _apply_deterministic_rule(
         self,
         rule: ResponseRule,
         session: str,
         config: EpisodeConfig,
-        approval_budget: R1ApprovalBudget,
+        approval_budget: TurnApprovalBudget,
         chats: dict[str, str],
         roots: dict[str, str],
         evidence: EpisodeEvidence,
@@ -436,14 +656,55 @@ class EpisodeExecutor:
             raise _EpisodeStop("response_rule_identity_mismatch")
         if not matches_response_rule(rule, observation):
             return
+        await self._submit_rule_reply(
+            rule, session, config, approval_budget, chats, roots, evidence
+        )
+
+    async def _apply_prose_policy(
+        self,
+        rules: list[ResponseRule],
+        session: str,
+        config: EpisodeConfig,
+        approval_budget: TurnApprovalBudget,
+        chats: dict[str, str],
+        roots: dict[str, str],
+        evidence: EpisodeEvidence,
+        persisted: PersistedResponse,
+    ) -> None:
+        """Reduce the classifier's reading of the settled prose to one bounded action, or halt."""
+        request = ProseInterpretationRequest(
+            persisted.assistant_text,
+            tuple(rule.id for rule in rules),
+        )
+        try:
+            interpretation = self.prose_interpreter.interpret(request)
+            decision = decide_interpretation(request, interpretation)
+        except (ProseInterpretationError, ValueError) as exc:
+            raise _EpisodeStop("prose_interpreter_failed") from exc
+        if decision.action == "continue":
+            return
+        # a scientific question the harness cannot answer unattended halts for manual adjudication.
+        if decision.action == "stop" or decision.rule_id is None:
+            raise _EpisodeStop("prose_requires_review")
+        rule = next((item for item in rules if item.id == decision.rule_id), None)
+        if rule is None:
+            raise _EpisodeStop("prose_interpreter_invalid")
+        await self._submit_rule_reply(
+            rule, session, config, approval_budget, chats, roots, evidence
+        )
+
+    async def _submit_rule_reply(
+        self,
+        rule: ResponseRule,
+        session: str,
+        config: EpisodeConfig,
+        approval_budget: TurnApprovalBudget,
+        chats: dict[str, str],
+        roots: dict[str, str],
+        evidence: EpisodeEvidence,
+    ) -> None:
         execution = self._run_turn(
-            session,
-            f"rule.{rule.id}",
-            rule.reply,
-            config,
-            approval_budget,
-            chats,
-            roots,
+            session, f"rule.{rule.id}", rule.reply, config, approval_budget, chats, roots
         )
         evidence.steps.append(
             {
@@ -454,8 +715,14 @@ class EpisodeExecutor:
                 "checkpoint_id": None,
             }
         )
-        evidence.turns.append(_turn_record(f"rule.{rule.id}", execution))
         stop = _turn_stop_reason(execution)
+        persisted: PersistedResponse | None = None
+        if stop is None:
+            try:
+                persisted = await self._read_persisted_response(execution, config, rule.reply)
+            except _EpisodeStop as exc:
+                stop = exc.reason
+        evidence.turns.append(_turn_record(f"rule.{rule.id}", execution, persisted))
         if stop:
             raise _EpisodeStop(stop)
         result = execution.final.result
@@ -468,33 +735,112 @@ class EpisodeExecutor:
         config: EpisodeConfig,
         evidence: EpisodeEvidence,
     ) -> None:
-        work_root = config.run_dir / ".checkpoint-work"
-        work_root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=work_root) as temporary:
-            stable = await await_stable_project_snapshot(
-                config.source_db,
-                config.project_id,
-                Path(temporary),
-                config=config.snapshot,
-            )
-            conn = open_readonly(stable.path)
-            try:
-                result = evaluate_checkpoints(conn, config.project_id, [checkpoint])[0]
-            finally:
-                conn.close()
-        if work_root.exists() and not any(work_root.iterdir()):
-            work_root.rmdir()
+        # Persist a settled, project-scoped snapshot for this checkpoint, then evaluate the
+        # authored assertions against those exact bytes and record the result. Evaluation is an
+        # annotation for the grader — it never halts the run unless halt_on_checkpoint_gate is set.
+        snapshot, attempts = await self._materialize_labeled_snapshot(
+            config, "checkpoints", checkpoint["id"]
+        )
+        conn = open_readonly(snapshot.path)
+        try:
+            result = evaluate_checkpoints(conn, config.project_id, [checkpoint])[0]
+        finally:
+            conn.close()
         evidence.checkpoints.append(
             {
                 "id": result.id,
                 "mode": result.mode,
                 "passed": result.passed,
-                "stability_attempts": stable.attempts,
+                "stability_attempts": attempts,
+                "snapshot_path": str(snapshot.path),
+                "snapshot_sha256": snapshot.sha256,
                 "assertions": [
                     {"kind": assertion.kind, "ok": assertion.ok, "detail": assertion.detail}
                     for assertion in result.assertions
                 ],
             }
         )
-        if result.mode == "gate" and not result.passed:
+        if config.halt_on_checkpoint_gate and result.mode == "gate" and not result.passed:
             raise _EpisodeStop(f"checkpoint_failed_{result.id}")
+
+    async def _materialize_labeled_snapshot(
+        self, config: EpisodeConfig, *label: str
+    ) -> tuple[ProjectSnapshot, int]:
+        """Await a settled project snapshot and freeze it to ``snapshots/<label...>/project.db``,
+        integrity-checked. The final snapshot and every per-checkpoint snapshot are the same kind of
+        evidence, labelled differently, so a post-hoc grader reads settled bytes at each point."""
+        work_root = config.run_dir / ".snapshot-work"
+        work_root.mkdir(parents=True, exist_ok=True)
+        try:
+            with tempfile.TemporaryDirectory(dir=work_root) as temporary:
+                stable = await await_stable_project_snapshot(
+                    config.source_db,
+                    config.project_id,
+                    Path(temporary),
+                    config=config.snapshot,
+                    observer=observe_project_settled,
+                )
+                destination = _reduced_snapshot_path(config.run_dir, *label, "project.db")
+                snapshot = materialize_project_snapshot(
+                    stable.path, destination, config.project_id
+                )
+        finally:
+            if work_root.exists() and not any(work_root.iterdir()):
+                work_root.rmdir()
+        return snapshot, stable.attempts
+
+    async def _materialize_final_snapshot(
+        self, config: EpisodeConfig
+    ) -> tuple[ProjectSnapshot, int]:
+        """Freeze the project's terminal evidence into one reduced, integrity-checked snapshot."""
+        return await self._materialize_labeled_snapshot(config, "final")
+
+    def _regrade_final_turn(
+        self,
+        turn_prompts: dict[str, str],
+        evidence: EpisodeEvidence,
+        config: EpisodeConfig,
+        snapshot: ProjectSnapshot,
+        stability_attempts: int,
+    ) -> None:
+        """Re-bind the LAST captured turn's evidence to the immutable final snapshot, so the
+        reported final prose is proven against the same bytes the record advertises as final — even
+        when a deterministic rule reply, not the last submit, is the turn the rollout ended on."""
+        turn = evidence.turns[-1] if evidence.turns else None
+        if turn is None:
+            return
+        if turn["persisted_response"] is None and turn["persisted_input_request"] is None:
+            return
+        prompt = turn_prompts.get(turn["turn_id"])
+        if prompt is None:
+            return
+        root_frame_id = turn.get("root_frame_id")
+        user_turn_id = turn.get("normalized_user_turn_id")
+        authored_prompt_sha256 = turn.get("authored_prompt_sha256")
+        if not all(
+            isinstance(value, str) and value
+            for value in (root_frame_id, user_turn_id, authored_prompt_sha256)
+        ):
+            raise PersistedResponseError("final turn identity is incomplete")
+        if turn["persisted_response"] is not None:
+            persisted = self.response_reader.read_from_snapshot(
+                snapshot_db=snapshot.path,
+                project_id=config.project_id,
+                root_frame_id=root_frame_id,
+                user_turn_id=user_turn_id,
+                authored_prompt=prompt,
+                authored_prompt_sha256=authored_prompt_sha256,
+                stability_attempts=stability_attempts,
+            )
+            turn["persisted_response"] = _persisted_response_record(persisted)
+        if turn["persisted_input_request"] is not None:
+            pending = self.response_reader.read_input_request_from_snapshot(
+                snapshot_db=snapshot.path,
+                project_id=config.project_id,
+                root_frame_id=root_frame_id,
+                user_turn_id=user_turn_id,
+                authored_prompt=prompt,
+                authored_prompt_sha256=authored_prompt_sha256,
+                stability_attempts=stability_attempts,
+            )
+            turn["persisted_input_request"] = _persisted_input_request_record(pending)

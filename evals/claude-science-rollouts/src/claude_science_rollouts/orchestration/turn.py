@@ -1,4 +1,4 @@
-"""R1 turn orchestration: submit once, resolve exact approvals, resume without replay."""
+"""Turn orchestration: submit once, resolve exact approvals, resume without replay."""
 
 from __future__ import annotations
 
@@ -17,14 +17,14 @@ from .models import (
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,139}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-R1StopReason = Literal["settled", "terminal_observation", "non_completed", "policy_exceeded"]
+TurnStopReason = Literal["settled", "terminal_observation", "non_completed", "policy_exceeded"]
 _TERMINAL_STATES = frozenset(
     {"input_required", "indeterminate", "navigation_drift", "failed"}
 )
 
 
 @dataclass(frozen=True, slots=True)
-class R1ApprovalPolicy:
+class TurnApprovalPolicy:
     action: ApprovalDecision = "deny"
     max_approvals: int = 0
 
@@ -42,12 +42,12 @@ class R1ApprovalPolicy:
 
 
 @dataclass(slots=True)
-class R1ApprovalBudget:
+class TurnApprovalBudget:
     action: ApprovalDecision
     remaining: int
 
     @classmethod
-    def from_policy(cls, policy: R1ApprovalPolicy) -> R1ApprovalBudget:
+    def from_policy(cls, policy: TurnApprovalPolicy) -> TurnApprovalBudget:
         return cls(policy.action, policy.max_approvals)
 
     def take_decision(self) -> tuple[ApprovalDecision, bool]:
@@ -58,7 +58,7 @@ class R1ApprovalBudget:
 
 
 @dataclass(frozen=True, slots=True)
-class R1TurnRequest:
+class TurnRequest:
     project_id: str
     chat_id: str
     root_mode: RootMode
@@ -99,18 +99,18 @@ class R1TurnRequest:
 
 
 @dataclass(frozen=True, slots=True)
-class R1Execution:
+class TurnExecution:
     final: Outcome[TurnResult]
     approval_resolutions: tuple[Outcome[ApprovalResolved], ...]
     wait_count: int
-    stop_reason: R1StopReason
+    stop_reason: TurnStopReason
 
 
-class R1LimitError(RuntimeError):
-    """Raised when a delivered turn does not settle within the caller-owned R1 bound."""
+class TurnLimitError(RuntimeError):
+    """Raised when a delivered turn does not settle within the caller-owned wait bound."""
 
 
-class R1ProtocolError(RuntimeError):
+class TurnProtocolError(RuntimeError):
     """Raised when a completed driver result violates its requested identities."""
 
 
@@ -127,20 +127,20 @@ def _as_turn_outcome(outcome: Outcome[ApprovalResolved]) -> Outcome[TurnResult]:
 
 def _validate_turn_identity(
     turn: TurnResult,
-    request: R1TurnRequest,
+    request: TurnRequest,
     expected_root_frame_id: str | None,
     *,
     first_result: bool,
 ) -> str:
     if turn.project_id != request.project_id or turn.chat_id != request.chat_id:
-        raise R1ProtocolError("turn result project/chat identity mismatch")
+        raise TurnProtocolError("turn result project/chat identity mismatch")
     if expected_root_frame_id is not None and turn.root_frame_id != expected_root_frame_id:
-        raise R1ProtocolError("turn result root identity mismatch")
+        raise TurnProtocolError("turn result root identity mismatch")
     if first_result and turn.root_created != (request.root_mode == "new"):
-        raise R1ProtocolError("turn result root_created does not match root mode")
+        raise TurnProtocolError("turn result root_created does not match root mode")
     for proof in (turn.delivery, turn.continuation):
         if proof is not None and proof.authored_prompt_sha256 != request.authored_prompt_sha256:
-            raise R1ProtocolError("turn result authored prompt identity mismatch")
+            raise TurnProtocolError("turn result authored prompt identity mismatch")
     return turn.root_frame_id
 
 
@@ -157,19 +157,19 @@ def _validate_approval_echo(
         or resolved.card_id != card_id
         or resolved.decision != decision
     ):
-        raise R1ProtocolError("approval result identity or decision mismatch")
+        raise TurnProtocolError("approval result identity or decision mismatch")
 
 
-def run_r1_turn(
+def run_turn(
     driver: BrowserDriver,
-    request: R1TurnRequest,
+    request: TurnRequest,
     *,
-    approval_policy: R1ApprovalPolicy | None = None,
-    approval_budget: R1ApprovalBudget | None = None,
-) -> R1Execution:
+    approval_policy: TurnApprovalPolicy | None = None,
+    approval_budget: TurnApprovalBudget | None = None,
+) -> TurnExecution:
     """Drive one turn to a bounded terminal observation without replaying its prompt."""
-    policy = approval_policy or R1ApprovalPolicy()
-    budget = approval_budget or R1ApprovalBudget.from_policy(policy)
+    policy = approval_policy or TurnApprovalPolicy()
+    budget = approval_budget or TurnApprovalBudget.from_policy(policy)
     current = driver.submit_turn_wait(
         request.project_id,
         request.chat_id,
@@ -187,7 +187,7 @@ def run_r1_turn(
 
     while True:
         if not current.completed:
-            return R1Execution(current, tuple(resolutions), waits, "non_completed")
+            return TurnExecution(current, tuple(resolutions), waits, "non_completed")
         turn = current.result
         assert turn is not None
         expected_root_frame_id = _validate_turn_identity(
@@ -198,18 +198,18 @@ def run_r1_turn(
         )
         first_result = False
         if turn.turn_state == "settled":
-            return R1Execution(current, tuple(resolutions), waits, "settled")
+            return TurnExecution(current, tuple(resolutions), waits, "settled")
         if turn.turn_state in _TERMINAL_STATES:
-            return R1Execution(current, tuple(resolutions), waits, "terminal_observation")
+            return TurnExecution(current, tuple(resolutions), waits, "terminal_observation")
         if turn.continuation is None:
-            raise R1ProtocolError("busy turn must be delivered with a continuation")
+            raise TurnProtocolError("busy turn must be delivered with a continuation")
         if waits >= request.max_waits:
-            raise R1LimitError(f"turn did not settle within {request.max_waits} waits")
+            raise TurnLimitError(f"turn did not settle within {request.max_waits} waits")
 
         if turn.turn_state == "approval_required":
             assert turn.approval is not None
             if len(turn.approval.cards) != 1:
-                raise R1ProtocolError(
+                raise TurnProtocolError(
                     "approval_required must contain exactly one actionable card"
                 )
             card = turn.approval.cards[0]
@@ -226,7 +226,7 @@ def run_r1_turn(
             )
             resolutions.append(resolution)
             if not resolution.completed:
-                return R1Execution(
+                return TurnExecution(
                     _as_turn_outcome(resolution),
                     tuple(resolutions),
                     waits,
@@ -235,7 +235,7 @@ def run_r1_turn(
             assert resolution.result is not None
             _validate_approval_echo(resolution.result, turn, card.card_id, decision)
             if not within_budget:
-                return R1Execution(current, tuple(resolutions), waits, "policy_exceeded")
+                return TurnExecution(current, tuple(resolutions), waits, "policy_exceeded")
 
         waits += 1
         current = driver.wait_turn(

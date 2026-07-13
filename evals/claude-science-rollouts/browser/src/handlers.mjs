@@ -7,7 +7,9 @@ import {
   buildChatInspectSource,
   buildContextInspectSource,
   buildProjectInspectSource,
+  PAGE_OBSERVATION_HELPERS_SOURCE,
 } from "./observations.mjs";
+import { buildSelectModelSource } from "./model_selection.mjs";
 import {
   buildResolveApprovalSource,
   buildSubmitTurnSource,
@@ -18,12 +20,15 @@ import {
 import {
   buildCreateProjectSource,
   buildNewChatSource,
-  buildOpenAttachmentChooserSource,
+  buildSetAttachmentSource,
   buildVerifyAttachmentSource,
 } from "./setup.mjs";
 
 const SESSION_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
-
+const ATTACHMENT_CHOOSER_CAUSES = new Set([
+  "ATTACHMENT_DRAFT_NOT_READY",
+  "ATTACHMENT_INPUT_UNAVAILABLE",
+]);
 export const SESSION_INSPECT_SOURCE = `async (page) => {
   const pageState = await page.evaluate(() => ({
     bodyPresent: document.body !== null,
@@ -302,6 +307,47 @@ export function createNewChatHandler({ runCommand = runCli } = {}) {
   };
 }
 
+export function createModelSelectHandler({ runCommand = runCli } = {}) {
+  return async function selectModel(payload, context) {
+    let wrapper;
+    try {
+      wrapper = await runBoundaryCode(
+        runCommand,
+        buildSelectModelSource({
+          origin: context.session.origin,
+          projectId: payload.project_id,
+          chatId: payload.chat_id,
+          modelLabel: payload.model_label,
+          helpersSource: PAGE_OBSERVATION_HELPERS_SOURCE,
+        }),
+        context,
+      );
+    } catch (error) {
+      throw mutationFailure("SELECT_MODEL", error);
+    }
+    return unwrapSetupMutation(
+      wrapper,
+      context,
+      "SELECT_MODEL",
+      (result) => {
+        if (
+          !result ||
+          result.project_id !== payload.project_id ||
+          result.chat_id !== payload.chat_id ||
+          result.model_label !== payload.model_label ||
+          typeof result.previous_model_label !== "string" ||
+          typeof result.changed !== "boolean" ||
+          result.confirmed !== true ||
+          result.changed !== (result.previous_model_label !== result.model_label)
+        ) {
+          throw identityMismatch("Model selection result is inconsistent");
+        }
+        return result;
+      },
+    );
+  };
+}
+
 export function createAttachmentUploadHandler({ runCommand = runCli } = {}) {
   return async function uploadAttachment(payload, context) {
     const startedAt = performance.now();
@@ -332,10 +378,11 @@ export function createAttachmentUploadHandler({ runCommand = runCli } = {}) {
     try {
       chooser = await runBoundaryCode(
         runCommand,
-        buildOpenAttachmentChooserSource({
+        buildSetAttachmentSource({
           origin: context.session.origin,
           projectId: payload.project_id,
           chatId: payload.chat_id,
+          sourcePath,
         }),
         {
           ...context,
@@ -343,29 +390,25 @@ export function createAttachmentUploadHandler({ runCommand = runCli } = {}) {
         },
       );
     } catch (error) {
-      throw browserStateError(
-        error instanceof BoundaryError ? error.code : "MALFORMED_BROWSER_STATE",
-      );
+      throw mutationFailure("UPLOAD", error);
     }
     verifyOrigin(chooser, context);
-    if (chooser._boundary_error || chooser.result?.ready !== true) {
-      throw browserStateError(
-        chooser._boundary_error ?? "MALFORMED_BROWSER_STATE",
+    const activeChatId = chooser.result?.chat_id;
+    if (chooser._boundary_error && chooser._mutation_attempted === true) {
+      throw mutationFailure(
+        "UPLOAD",
+        new BoundaryError(chooser._boundary_error, "Upload outcome is unknown"),
       );
     }
-
-    try {
-      await runCommand(
-        [
-          "--raw",
-          `-s=${context.session.session_id}`,
-          "upload",
-          sourcePath,
-        ],
-        { deadlineMs: remainingDeadline(context.deadlineMs, startedAt) },
+    if (
+      chooser._boundary_error ||
+      chooser.result?.ready !== true ||
+      typeof activeChatId !== "string" ||
+      !SESSION_NAME.test(activeChatId)
+    ) {
+      throw attachmentChooserError(
+        chooser._boundary_error ?? "MALFORMED_BROWSER_STATE",
       );
-    } catch (error) {
-      throw mutationFailure("UPLOAD", error);
     }
 
     let verification;
@@ -375,7 +418,7 @@ export function createAttachmentUploadHandler({ runCommand = runCli } = {}) {
         buildVerifyAttachmentSource({
           origin: context.session.origin,
           projectId: payload.project_id,
-          chatId: payload.chat_id,
+          chatId: activeChatId,
           filename,
         }),
         {
@@ -402,7 +445,7 @@ export function createAttachmentUploadHandler({ runCommand = runCli } = {}) {
     if (
       !result ||
       result.project_id !== payload.project_id ||
-      result.chat_id !== payload.chat_id ||
+      result.chat_id !== activeChatId ||
       result.filename !== filename ||
       result.accepted !== true ||
       Object.hasOwn(result, "source_path")
@@ -543,10 +586,25 @@ export function createResolveApprovalHandler({ runCommand = runCli } = {}) {
 
 async function runBoundaryCode(runCommand, source, context) {
   const stdout = await runCommand(
-    ["--raw", `-s=${context.session.session_id}`, "run-code", source],
+    ["--json", `-s=${context.session.session_id}`, "run-code", source],
     { deadlineMs: context.deadlineMs },
   );
-  const result = parseCliJson(stdout);
+  const envelope = parseCliJson(stdout);
+  if (envelope?.isError === true) {
+    throw new BoundaryError(
+      "CLI_COMMAND_FAILED",
+      "Browser CLI command failed",
+      { retryable: true },
+    );
+  }
+  if (typeof envelope?.result !== "string") {
+    throw new BoundaryError(
+      "CLI_INVALID_OUTPUT",
+      "Browser CLI returned an invalid structured result",
+      { retryable: true },
+    );
+  }
+  const result = parseCliJson(envelope.result);
   if (result === null || typeof result !== "object" || Array.isArray(result)) {
     throw new BoundaryError(
       "CLI_INVALID_OUTPUT",
@@ -638,16 +696,31 @@ function browserStateError(code) {
   const messages = {
     AMBIGUOUS_APPROVAL: "Approval state is ambiguous",
     APPROVAL_NOT_CLEARED: "Approval clearance could not be verified",
+    ATTACHMENT_DRAFT_NOT_READY: "Attachment draft is not ready",
+    ATTACHMENT_INPUT_UNAVAILABLE: "Attachment input is unavailable",
     DELIVERY_MISMATCH: "Delivered turn does not match the expected prompt",
     DELIVERY_NOT_CONFIRMED: "Prompt delivery could not be confirmed",
     IDENTITY_MISMATCH: "Browser identity is inconsistent",
     MALFORMED_BROWSER_STATE: "Browser state is malformed or ambiguous",
+    MODEL_CONTROL_AMBIGUOUS: "Model control is malformed or ambiguous",
+    MODEL_OPTION_AMBIGUOUS: "Model option is missing or ambiguous",
+    MODEL_SELECTION_REQUIRES_BLANK_CHAT: "Model selection requires a blank chat",
+    MODEL_SELECTION_UNCONFIRMED: "Model selection could not be confirmed",
     NAVIGATION_DRIFT: "Browser session navigated away from the expected origin",
   };
   return new BoundaryError(
     Object.hasOwn(messages, code) ? code : "MALFORMED_BROWSER_STATE",
     messages[code] ?? "Browser state is malformed or ambiguous",
     { retryable: false },
+  );
+}
+
+function attachmentChooserError(code) {
+  if (!ATTACHMENT_CHOOSER_CAUSES.has(code)) return browserStateError(code);
+  return new BoundaryError(
+    "MALFORMED_BROWSER_STATE",
+    "Attachment chooser is unavailable",
+    { evidence: { cause_code: code } },
   );
 }
 
@@ -767,6 +840,7 @@ export function createDefaultHandlers(options = {}) {
     "project.create": createProjectCreateHandler(options),
     "attachment.upload": createAttachmentUploadHandler(options),
     "chat.new": createNewChatHandler(options),
+    "model.select": createModelSelectHandler(options),
     "chat.inspect": createChatInspectHandler(options),
     "agent_context.inspect": createContextInspectHandler(options),
     "turn.submit_wait": createSubmitTurnWaitHandler(options),
