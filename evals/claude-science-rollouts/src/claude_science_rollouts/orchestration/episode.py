@@ -442,11 +442,12 @@ class EpisodeExecutor:
         stop = _turn_stop_reason(execution)
         result = execution.final.result
         # An 'indeterminate' terminal on a CONSTRUCTION turn is the browser failing to confirm the
-        # turn settled — not the agent pausing for input. The turn's DB writes have already settled
-        # (the snapshot barrier proved it), so record the observation and drive on to the next
-        # scripted turn instead of ending the episode. A genuine input_required ask, a hard failure,
-        # navigation drift, and the trial turn all stay terminal — so real question-catches are
-        # still captured; only the browser's own uncertainty is driven through.
+        # turn settled — not the agent pausing for input. We accept the browser-reported root and
+        # drive on to the next scripted turn instead of ending the episode; the next turn's
+        # persisted read runs the snapshot barrier, which proves a stable DB state that transitively
+        # covers this turn's writes. A genuine input_required ask, a hard failure, navigation drift,
+        # and the trial turn all stay terminal — so real question-catches are still captured; only
+        # the browser's own uncertainty is driven through.
         drive_through = (
             stop == "terminal_observation"
             and result is not None

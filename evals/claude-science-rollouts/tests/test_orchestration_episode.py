@@ -750,6 +750,35 @@ def test_indeterminate_construction_turn_drives_through_to_trial(tmp_path: Path)
     driver.assert_consumed()
 
 
+def test_indeterminate_trial_turn_stays_terminal(tmp_path: Path) -> None:
+    # The trial turn IS the captured outcome, so an 'indeterminate' there is not driven through
+    # (is_trial=True): it finalizes the episode like any other terminal, unlike a construction turn.
+    scenario = _minimal_scenario()
+    source_db = tmp_path / "operon.db"
+    _seed_db(source_db, artifact=True)
+    scripts = _base_scripts()
+    scripts["submit_turn_wait"] = [
+        _completed(
+            _settled_turn(
+                "chat-1", "root-1", scenario.construction[0].prompt, 1, root_created=True
+            )
+        ),
+        _completed(
+            _unsettled_turn(
+                "chat-1", "root-1", scenario.trial.variants["bare"], "indeterminate",
+                root_created=False,
+            )
+        ),
+    ]
+    driver = FakeBrowserDriver("session-1", _ORIGIN, scripts)
+
+    result = asyncio.run(_executor(driver).run(scenario, _config(tmp_path, source_db)))
+
+    assert result.terminal_reason == "terminal_observation"  # trial terminal = the captured outcome
+    assert [call.operation for call in driver.calls].count("submit_turn_wait") == 2
+    driver.assert_consumed()
+
+
 def test_checkpoint_failure_halts_when_gate_enabled(tmp_path: Path) -> None:
     # halt_on_checkpoint_gate is the opt-in early-stop capability: a failed GATE-mode checkpoint
     # stops the rollout before the trial. Generation leaves it off (next test).
