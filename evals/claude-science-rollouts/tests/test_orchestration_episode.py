@@ -35,10 +35,20 @@ from claude_science_rollouts.orchestration.models import (
     TurnObservation,
     TurnResult,
 )
+from claude_science_rollouts.orchestration.prose import (
+    ProseInterpretationRequest,
+    ProseInterpretationResult,
+    ProseInterpreter,
+)
+from claude_science_rollouts.persistence.responses import (
+    PersistedInputRequest,
+    PersistedResponse,
+)
 from claude_science_rollouts.persistence.snapshots import SnapshotBarrierConfig
 from claude_science_rollouts.scenario.compiler import compile_scenario
 from claude_science_rollouts.scenario.spec import (
     ApprovalPolicy,
+    ResponseRule,
     Scenario,
     Session,
     Trial,
@@ -196,6 +206,85 @@ def _base_scripts(chat_id: str = "chat-1") -> dict[str, list[Outcome]]:
     }
 
 
+class _FakeResponseReader:
+    """Scripted persisted-evidence reader: returns responses/input-requests keyed by user turn id.
+
+    This stands in for the operon-backed reader so the episode's capture *wiring* is exercised — the
+    reader is called at every settle point and its records land in the manifest — without needing a
+    full transcript. ``snapshot_reads`` records which reduced snapshot the final-turn regrade read.
+    """
+
+    def __init__(self, responses: dict[str, str] | None = None) -> None:
+        self.responses = responses or {}
+        self.snapshot_reads: list[Path] = []
+
+    def _response(self, **kwargs) -> PersistedResponse:
+        user_turn_id = kwargs["user_turn_id"]
+        text = self.responses.get(user_turn_id, "The requested work is complete.")
+        return PersistedResponse(
+            kwargs["project_id"],
+            kwargs["root_frame_id"],
+            user_turn_id,
+            kwargs["authored_prompt_sha256"],
+            f"assistant-{user_turn_id}",
+            text,
+            hashlib.sha256(text.encode()).hexdigest(),
+            2,
+            None,
+        )
+
+    def _input_request(self, **kwargs) -> PersistedInputRequest:
+        payload = {"question": "The outputs use different data versions. Continue?"}
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return PersistedInputRequest(
+            kwargs["project_id"],
+            kwargs["root_frame_id"],
+            kwargs["user_turn_id"],
+            kwargs["authored_prompt_sha256"],
+            f"assistant-{kwargs['user_turn_id']}",
+            "I found a version conflict.",
+            "input-1",
+            "request_input",
+            payload,
+            hashlib.sha256(canonical.encode()).hexdigest(),
+            2,
+            None,
+            "awaiting_user_response",
+        )
+
+    async def read(self, **kwargs) -> PersistedResponse:
+        return self._response(**kwargs)
+
+    async def read_input_request(self, **kwargs) -> PersistedInputRequest:
+        return self._input_request(**kwargs)
+
+    def read_from_snapshot(self, **kwargs) -> PersistedResponse:
+        self.snapshot_reads.append(kwargs["snapshot_db"])
+        return self._response(**kwargs)
+
+    def read_input_request_from_snapshot(self, **kwargs) -> PersistedInputRequest:
+        self.snapshot_reads.append(kwargs["snapshot_db"])
+        return self._input_request(**kwargs)
+
+
+class _FixedInterpreter:
+    """Return one canned classifier reading regardless of the prose handed in."""
+
+    def __init__(self, result: ProseInterpretationResult) -> None:
+        self.result = result
+
+    def interpret(self, _request: ProseInterpretationRequest) -> ProseInterpretationResult:
+        return self.result
+
+
+def _executor(
+    driver: FakeBrowserDriver,
+    responses: dict[str, str] | None = None,
+    interpreter: ProseInterpreter | None = None,
+) -> EpisodeExecutor:
+    return EpisodeExecutor(driver, _FakeResponseReader(responses), interpreter)
+
+
 def test_pbmc_episode_executes_full_plan_and_persists_compact_evidence(tmp_path: Path) -> None:
     scenario = load_scenario(_SCENARIO_PATH)
     source_db = tmp_path / "operon.db"
@@ -284,9 +373,10 @@ def test_pbmc_episode_executes_full_plan_and_persists_compact_evidence(tmp_path:
         "detach": [_completed(Detached(True))],
     }
     driver = FakeBrowserDriver("session-1", _ORIGIN, scripts)
+    reader = _FakeResponseReader()
 
     result = asyncio.run(
-        EpisodeExecutor(driver).run(scenario, _config(tmp_path, source_db, fixture))
+        EpisodeExecutor(driver, reader).run(scenario, _config(tmp_path, source_db, fixture))
     )
 
     assert result.terminal_reason == "completed"
@@ -317,8 +407,21 @@ def test_pbmc_episode_executes_full_plan_and_persists_compact_evidence(tmp_path:
     assert all(item["passed"] for item in manifest["checkpoints"])
     assert all(item["stability_attempts"] == 2 for item in manifest["checkpoints"])
     assert manifest["final_snapshot"]["stability_attempts"] == 2
+
+    # every settled turn now carries the persisted-response evidence read at its settle point.
+    assert all(item["persisted_response"] is not None for item in manifest["turns"])
+    assert all(item["persisted_input_request"] is None for item in manifest["turns"])
+    first_response = manifest["turns"][0]["persisted_response"]
+    assert len(first_response["assistant_text_sha256"]) == 64
+    assert first_response["stability_attempts"] == 2
+    assert first_response["assistant_message_id"] == "assistant-user-turn-1"
+    # the final turn's evidence is re-bound to the immutable reduced snapshot before finalizing.
+    assert reader.snapshot_reads == [tmp_path / "run" / "snapshots" / "final" / "project.db"]
+
     assert len(list((tmp_path / "run").rglob("*.db"))) == 1
+    assert manifest["final_snapshot"]["path"] == "snapshots/final/project.db"
     assert not (tmp_path / "run" / ".checkpoint-work").exists()
+    assert not (tmp_path / "run" / ".final-work").exists()
 
 
 def test_pbmc_approval_policy_maps_to_python_owned_limit() -> None:
@@ -348,7 +451,7 @@ def test_pbmc_fixture_name_and_hash_fail_before_upload(
     driver = FakeBrowserDriver("session-1", _ORIGIN, _base_scripts())
 
     result = asyncio.run(
-        EpisodeExecutor(driver).run(scenario, _config(tmp_path, source_db, fixture))
+        _executor(driver).run(scenario, _config(tmp_path, source_db, fixture))
     )
 
     assert result.terminal_reason == reason
@@ -449,7 +552,7 @@ def test_ambiguous_turn_outcomes_stop_episode_and_detach(
         scripts["resolve_approval"] = [_unknown("approval_ambiguous")]
     driver = FakeBrowserDriver("session-1", _ORIGIN, scripts)
 
-    result = asyncio.run(EpisodeExecutor(driver).run(scenario, _config(tmp_path, source_db)))
+    result = asyncio.run(_executor(driver).run(scenario, _config(tmp_path, source_db)))
 
     assert result.terminal_reason == "turn_unknown_outcome"
     operations = [call.operation for call in driver.calls]
@@ -482,7 +585,7 @@ def test_stale_new_chat_stops_before_submission(tmp_path: Path) -> None:
     }
     driver = FakeBrowserDriver("session-1", _ORIGIN, scripts)
 
-    result = asyncio.run(EpisodeExecutor(driver).run(scenario, _config(tmp_path, source_db)))
+    result = asyncio.run(_executor(driver).run(scenario, _config(tmp_path, source_db)))
 
     assert result.terminal_reason == "new_chat_not_fresh"
     assert [call.operation for call in driver.calls] == ["attach", "new_chat", "detach"]
@@ -498,7 +601,7 @@ def test_completed_detach_false_is_a_terminal_failure(tmp_path: Path) -> None:
     scripts["detach"] = [_completed(Detached(False))]
     driver = FakeBrowserDriver("session-1", _ORIGIN, scripts)
 
-    result = asyncio.run(EpisodeExecutor(driver).run(scenario, _config(tmp_path, source_db)))
+    result = asyncio.run(_executor(driver).run(scenario, _config(tmp_path, source_db)))
 
     assert result.terminal_reason == "detach_failed"
     manifest = json.loads(result.manifest_path.read_text())
@@ -531,7 +634,7 @@ def test_terminal_turn_state_finalizes_and_detaches_without_later_steps(
     ]
     driver = FakeBrowserDriver("session-1", _ORIGIN, scripts)
 
-    result = asyncio.run(EpisodeExecutor(driver).run(scenario, _config(tmp_path, source_db)))
+    result = asyncio.run(_executor(driver).run(scenario, _config(tmp_path, source_db)))
 
     assert result.terminal_reason == "terminal_observation"
     assert [call.operation for call in driver.calls] == [
@@ -562,7 +665,7 @@ def test_checkpoint_failure_stops_before_trial_and_detaches(tmp_path: Path) -> N
     ]
     driver = FakeBrowserDriver("session-1", _ORIGIN, scripts)
 
-    result = asyncio.run(EpisodeExecutor(driver).run(scenario, _config(tmp_path, source_db)))
+    result = asyncio.run(_executor(driver).run(scenario, _config(tmp_path, source_db)))
 
     assert result.terminal_reason == "checkpoint_failed_gate"
     assert [call.operation for call in driver.calls].count("submit_turn_wait") == 1
@@ -592,7 +695,7 @@ def test_busy_continuation_settles_without_prompt_replay(tmp_path: Path) -> None
     ]
     driver = FakeBrowserDriver("session-1", _ORIGIN, scripts)
 
-    result = asyncio.run(EpisodeExecutor(driver).run(scenario, _config(tmp_path, source_db)))
+    result = asyncio.run(_executor(driver).run(scenario, _config(tmp_path, source_db)))
 
     operations = [call.operation for call in driver.calls]
     assert result.terminal_reason == "completed"
@@ -641,7 +744,7 @@ def test_scenario_approval_budget_denies_excess_and_stops_episode(tmp_path: Path
     ]
     driver = FakeBrowserDriver("session-1", _ORIGIN, scripts)
 
-    result = asyncio.run(EpisodeExecutor(driver).run(scenario, _config(tmp_path, source_db)))
+    result = asyncio.run(_executor(driver).run(scenario, _config(tmp_path, source_db)))
 
     assert result.terminal_reason == "policy_exceeded"
     decisions = [call.arguments[4] for call in driver.calls if call.operation == "resolve_approval"]
@@ -725,7 +828,7 @@ def test_approval_budget_is_cumulative_across_separate_turns(tmp_path: Path) -> 
     ]
     driver = FakeBrowserDriver("session-1", _ORIGIN, scripts)
 
-    result = asyncio.run(EpisodeExecutor(driver).run(scenario, _config(tmp_path, source_db)))
+    result = asyncio.run(_executor(driver).run(scenario, _config(tmp_path, source_db)))
 
     decisions = [call.arguments[4] for call in driver.calls if call.operation == "resolve_approval"]
     assert decisions == ["allow_for_conversation", "deny"]
@@ -756,7 +859,7 @@ def test_exception_and_cancellation_finalize_evidence_and_detach(
     driver = _RaisingDriver(failure, scripts)
 
     with pytest.raises(type(failure)):
-        asyncio.run(EpisodeExecutor(driver).run(scenario, _config(tmp_path, source_db)))
+        asyncio.run(_executor(driver).run(scenario, _config(tmp_path, source_db)))
 
     assert [call.operation for call in driver.calls].count("detach") == 1
     manifest_path = tmp_path / "run" / "episode_manifest.json"
@@ -764,4 +867,163 @@ def test_exception_and_cancellation_finalize_evidence_and_detach(
     expected = "cancelled" if isinstance(failure, asyncio.CancelledError) else "exception"
     assert manifest["terminal_reason"] == expected
     assert manifest["final_snapshot"] is not None
+    driver.assert_consumed()
+
+
+def test_input_required_turn_captures_persisted_input_request(tmp_path: Path) -> None:
+    scenario = _minimal_scenario()
+    source_db = tmp_path / "operon.db"
+    _seed_db(source_db, artifact=True)
+    scripts = _base_scripts()
+    scripts["submit_turn_wait"] = [
+        _completed(
+            _unsettled_turn(
+                "chat-1", "root-1", scenario.construction[0].prompt, "input_required"
+            )
+        )
+    ]
+    driver = FakeBrowserDriver("session-1", _ORIGIN, scripts)
+
+    result = asyncio.run(_executor(driver).run(scenario, _config(tmp_path, source_db)))
+
+    # the browser-observed terminal state stays authoritative; the DB read is supplementary capture.
+    assert result.terminal_reason == "terminal_observation"
+    turn = json.loads(result.manifest_path.read_text())["turns"][0]
+    assert turn["persisted_response"] is None
+    assert turn["persisted_input_request"] is not None
+    assert turn["persisted_input_request"]["assistant_text"] == "I found a version conflict."
+    assert turn["persisted_input_request"]["root_status"] == "awaiting_user_response"
+    assert [call.operation for call in driver.calls] == [
+        "attach",
+        "new_chat",
+        "submit_turn_wait",
+        "detach",
+    ]
+    driver.assert_consumed()
+
+
+def _sibling_offer_scenario() -> Scenario:
+    return replace(
+        _minimal_scenario(),
+        response_rules=(
+            ResponseRule(
+                "decline-sibling-regen",
+                "construction",
+                "offer_to_regenerate_siblings",
+                "Leave the sibling branch unchanged.",
+            ),
+        ),
+    )
+
+
+def test_prose_policy_halts_on_unresolved_scientific_question(tmp_path: Path) -> None:
+    scenario = _sibling_offer_scenario()
+    source_db = tmp_path / "operon.db"
+    _seed_db(source_db, artifact=True)
+    scripts = _base_scripts()
+    scripts["submit_turn_wait"] = [
+        _completed(
+            _settled_turn("chat-1", "root-1", "construct artifact", 1, root_created=True)
+        )
+    ]
+    driver = FakeBrowserDriver("session-1", _ORIGIN, scripts)
+    # an excerpt absent from the settled prose leaves the reading unauditable, so the policy halts.
+    interpreter = _FixedInterpreter(
+        ProseInterpretationResult("scientific_caveat_only", None, "an excerpt not in the prose")
+    )
+
+    result = asyncio.run(
+        EpisodeExecutor(driver, _FakeResponseReader(), interpreter).run(
+            scenario, _config(tmp_path, source_db)
+        )
+    )
+
+    assert result.terminal_reason == "prose_requires_review"
+    operations = [call.operation for call in driver.calls]
+    assert operations.count("submit_turn_wait") == 1  # halted before the trial turn
+    assert "inspect_chat" not in operations  # the attended path reads DB prose, not the transcript
+    assert operations[-1] == "detach"
+    turn = json.loads(result.manifest_path.read_text())["turns"][0]
+    assert turn["persisted_response"]["assistant_text"] == "The requested work is complete."
+    driver.assert_consumed()
+
+
+def test_prose_policy_submits_canonical_reply_for_offered_correction(tmp_path: Path) -> None:
+    scenario = _sibling_offer_scenario()
+    source_db = tmp_path / "operon.db"
+    _seed_db(source_db, artifact=True)
+    prose = "The sibling panels still use prior QC. Would you like me to regenerate them?"
+    scripts = _base_scripts()
+    scripts["submit_turn_wait"] = [
+        _completed(
+            _settled_turn("chat-1", "root-1", "construct artifact", 1, root_created=True)
+        ),
+        _completed(
+            _settled_turn(
+                "chat-1", "root-1", "Leave the sibling branch unchanged.", 2, root_created=False
+            )
+        ),
+        _completed(_settled_turn("chat-1", "root-1", "run trial", 3, root_created=False)),
+    ]
+    driver = FakeBrowserDriver("session-1", _ORIGIN, scripts)
+    reader = _FakeResponseReader({"user-turn-1": prose})
+    interpreter = _FixedInterpreter(
+        ProseInterpretationResult(
+            "lineage_correction_offered", "decline-sibling-regen", "Would you like me to"
+        )
+    )
+
+    result = asyncio.run(
+        EpisodeExecutor(driver, reader, interpreter).run(scenario, _config(tmp_path, source_db))
+    )
+
+    assert result.terminal_reason == "completed"
+    prompts = [call.arguments[3] for call in driver.calls if call.operation == "submit_turn_wait"]
+    assert prompts == [
+        "construct artifact",
+        "Leave the sibling branch unchanged.",
+        "run trial",
+    ]
+    manifest = json.loads(result.manifest_path.read_text())
+    assert [item["op"] for item in manifest["steps"] if item["op"] == "response_rule"] == [
+        "response_rule"
+    ]
+    turn_ids = [item["turn_id"] for item in manifest["turns"]]
+    assert "rule.decline-sibling-regen" in turn_ids
+    driver.assert_consumed()
+
+
+def test_boundary_error_is_folded_into_step_evidence(tmp_path: Path) -> None:
+    scenario = _minimal_scenario()
+    source_db = tmp_path / "operon.db"
+    _seed_db(source_db, artifact=True)
+    scripts = {
+        "attach": [_completed(SessionInspection(True, _ORIGIN, True))],
+        "new_chat": [
+            Outcome(
+                "not_started",
+                None,
+                BrowserError(
+                    "NEW_CHAT_CONTROL_UNAVAILABLE",
+                    "boundary failure",
+                    True,
+                    {"phase": "new_chat"},
+                ),
+                _TIMING,
+            )
+        ],
+        "detach": [_completed(Detached(True))],
+    }
+    driver = FakeBrowserDriver("session-1", _ORIGIN, scripts)
+
+    result = asyncio.run(_executor(driver).run(scenario, _config(tmp_path, source_db)))
+
+    assert result.terminal_reason == "chat_not_started"
+    manifest = json.loads(result.manifest_path.read_text())
+    chat_step = next(step for step in manifest["steps"] if step["op"] == "new_chat")
+    assert chat_step["error"] == {
+        "code": "NEW_CHAT_CONTROL_UNAVAILABLE",
+        "retryable": True,
+        "evidence": {"phase": "new_chat"},
+    }
     driver.assert_consumed()
