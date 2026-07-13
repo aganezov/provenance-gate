@@ -19,6 +19,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+# The skill's own cockpit render outputs (what render_cockpit saves). Both readers exclude these
+# from every derived graph so a project's provenance shows the user's science, not the gate's own
+# plumbing — one shared constant so the in-CS and external readers can't drift. A drift test pins it
+# to what render_cockpit actually saves.
+SELF_ARTIFACTS = ("cockpit.html", "cytoscape-dagre.bundle.min.js", "cockpit-app.js")
+
 
 @dataclass(frozen=True, slots=True)
 class ArtifactRef:

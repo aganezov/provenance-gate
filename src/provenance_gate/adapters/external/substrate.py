@@ -13,7 +13,7 @@ from __future__ import annotations
 import sqlite3
 
 from ...core import derive, walk
-from ...core.model import Graph
+from ...core.model import SELF_ARTIFACTS, Graph
 
 
 def open_cs_db(path: str) -> sqlite3.Connection:
@@ -58,9 +58,18 @@ _VERSION_SELECT = (
 )
 
 
+# Exclude the skill's own render outputs from every graph, matching the in-CS reader, so the
+# two readers agree on any project — rendered or not. NULL-safe: a NULL filename is kept.
+_SELF_PLACEHOLDERS = ",".join(["?"] * len(SELF_ARTIFACTS))
+_NOT_SELF = f"(a.filename IS NULL OR a.filename NOT IN ({_SELF_PLACEHOLDERS}))"
+
+
 def fetch_versions(conn: sqlite3.Connection, project_id: str) -> dict[str, dict]:
-    """Every artifact version in the project as plain dicts, keyed by version id."""
-    rows = conn.execute(_VERSION_SELECT + " WHERE a.project_id = ?", (project_id,))
+    """Every artifact version in the project as plain dicts, keyed by version id (self-render
+    outputs excluded, so this matches the in-CS reader on rendered projects too)."""
+    rows = conn.execute(
+        _VERSION_SELECT + f" WHERE a.project_id = ? AND {_NOT_SELF}", (project_id, *SELF_ARTIFACTS)
+    )
     return {r["id"]: dict(r) for r in rows}
 
 
@@ -69,7 +78,10 @@ def fetch_versions_by_ids(conn: sqlite3.Connection, project_id: str, vids) -> di
     ``project_id`` so a cone that closes over a cross-project dependency edge can't leak foreign
     artifacts into a graph labelled for this project (the full read is project-scoped too)."""
     rows = _chunked_in(
-        conn, _VERSION_SELECT + " WHERE a.project_id = ? AND av.id IN ({q})", vids, (project_id,)
+        conn,
+        _VERSION_SELECT + f" WHERE a.project_id = ? AND {_NOT_SELF} AND av.id IN ({{q}})",
+        vids,
+        (project_id, *SELF_ARTIFACTS),
     )
     return {r["id"]: dict(r) for r in rows}
 

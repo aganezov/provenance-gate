@@ -4,17 +4,16 @@ This is the ports payoff made concrete: two readers (raw sqlite vs host.query), 
 identical graphs — the 'both adapters hand the core identical records' invariant, proven with no CS.
 The fake host runs the reader's SQL against the shared in-memory operon fixture (``cs_conn``).
 
-Parity holds on the science graph; it is exact only for self-artifact-free projects, because the
-in-CS reader *deliberately* strips SELF_ARTIFACTS (the skill's own cockpit outputs) while the
-external reader — which observes arbitrary projects and has no notion of "self" — does not. The
-parity fixtures carry no self-artifacts, so the two agree; test_reader_excludes_skill_render_outputs
-pins the in-CS-only exclusion separately.
+Parity is exact: both readers strip SELF_ARTIFACTS (the skill's own cockpit outputs) from every
+graph, so the two agree on any project — rendered or not. test_reader_excludes_skill_render_outputs
+pins that both readers exclude the render outputs.
 """
 
 import sqlite3
 
-from provenance_gate.adapters.cs_skill.host_query_reader import SELF_ARTIFACTS, HostQueryReader
+from provenance_gate.adapters.cs_skill.host_query_reader import HostQueryReader
 from provenance_gate.adapters.external import substrate
+from provenance_gate.core.model import SELF_ARTIFACTS
 
 
 class _FakeHost:
@@ -137,6 +136,15 @@ def test_reader_excludes_skill_render_outputs(cs_conn):
     files = {a.filename for n in g.nodes for a in list(n.output_surface) + list(n.input_surface)}
     assert "cockpit.html" not in files and "cytoscape-dagre.bundle.min.js" not in files
     assert "stats.csv" in files   # real artifacts still present
+
+    # the external server reader must exclude them identically, so the two readers derive the SAME
+    # graph on a rendered project.
+    host_reader = HostQueryReader(_FakeHost(cs_conn)).read_project_graph("proj_smoke")
+    db_reader = substrate.read_project_graph(cs_conn, "proj_smoke")
+    files_db = {a.filename
+                for n in db_reader.nodes for a in list(n.output_surface) + list(n.input_surface)}
+    assert "cockpit.html" not in files_db and "cytoscape-dagre.bundle.min.js" not in files_db
+    assert host_reader.nodes == db_reader.nodes   # exact parity, render outputs and all
 
 
 def test_reader_keeps_null_filename(cs_conn):
