@@ -32,8 +32,9 @@ unit of a node is a `derive` choice. Three settings reach the same core:
   `composition.csv` no longer inherits a sibling's `qc_params` read. Fewer false positives, at the
   risk of missing a within-turn influence that left no edge.
 - cell (current default): one agent turn, all its inputs attributed to each output. The conservative
-  default (D3). On valid (acyclic) provenance this flags a superset of the version setting, never
-  fewer mixes than the raw edges, only more.
+  default (D3). On a validated snapshot (artifact-version graph and producer-cell contraction both
+  acyclic) this flags a superset of the version setting, never fewer mixes than the raw edges, only
+  more.
 - frame: a whole task's cells pooled. More conservative still, but the shared-execution-state
   argument that justifies the cell weakens across separate cells, so it over-flags without the same
   warrant.
@@ -47,8 +48,12 @@ seam is there.
 
 The two checks age differently, which a persistent store could exploit:
 
-- `version_mix` is stable. A node's cone never changes, since artifacts are immutable and the graph
-  only grows, so a mix verdict can be computed once and kept. Nothing added elsewhere invalidates it.
+- `version_mix` is stable once a node's inputs are settled. Its cone is fixed by the versions the cell
+  consumed, so on an append-only graph with settled cells a mix verdict can be computed once and kept.
+  Two things can still grow that cone after the fact: a later revision attributed to an existing cell
+  (producer retention), or a later dependency row added to a version already in the cone. So cone
+  stability needs settled producer membership and settled dependency capture, not just immutable
+  version contents.
 - `stale_input` isn't. A new version of a consumed artifact, made anywhere, can turn an old node
   stale, so it has to be rechecked. It is cheap per row, though.
 

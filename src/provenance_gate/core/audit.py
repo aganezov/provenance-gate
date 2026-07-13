@@ -100,7 +100,7 @@ def _toposort(node_ids: list[str], deps: dict[str, set[str]]) -> list[str]:
             indeg[c] -= 1
             if indeg[c] == 0:
                 q.append(c)
-    if len(order) < len(node_ids):  # a provenance DAG shouldn't cycle; stay total if it does
+    if len(order) < len(node_ids):  # cell graph should be acyclic (not guaranteed); stay total
         seen = set(order)
         order += sorted(n for n in node_ids if n not in seen)
     return order
@@ -135,9 +135,10 @@ def _cones(
         over-approximation (conservative for a trust check).
       in_cones[node_id] = the merged lineage of what the node consumed (the cone its verdict reads).
     Each produced version subsumes older versions of its artifact, so a linear revision collapses.
-    Assumes a DAG — always true for immutable-artifact provenance (a version can only depend on
-    versions that already existed). A cycle (impossible in valid data) degrades to a best-effort
-    per-node verdict via the seed-as-own-source fallback, never a crash."""
+    The pass topo-sorts the cell graph (`deps`). The version graph is expected to be acyclic, but
+    its per-cell contraction can cycle if a producer id spans revisions; the gate does not validate
+    this. On a cell-graph cycle the toposort falls back to id order and seeds a missing input's cone
+    as a singleton, dropping ancestry, which can miss a mix. See docs/CELL-SUPERSET-THEOREM.md."""
     nodes = {n.id: n for n in graph.nodes}
     vcones: dict[str, dict[str, set[str]]] = {}
     in_cones: dict[str, dict[str, set[str]]] = {}

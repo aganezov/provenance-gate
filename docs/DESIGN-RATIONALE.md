@@ -47,11 +47,12 @@ covers what more access would open up.
 
 | # | We assume | Because | If it's wrong |
 |---|---|---|---|
-| A1 | The provenance is a DAG. | Artifacts are immutable versions; a version only depends on ones that already existed. | A cycle can't happen in real data. If one did, the audit degrades to a per-node best effort instead of crashing. |
+| A1 | The artifact-version graph is a DAG. | Artifacts are immutable versions; a version only depends on ones that already existed. | Expected, though not schema-enforced, and not validated by the gate. A version cycle degrades to a per-node best effort rather than crashing. It does not by itself give A6. |
 | A2 | CS is read-only to us. | We only issue reads. | Enforced by construction: the gate has no write path to call. |
-| A3 | A cell is an agent turn: it reads its inputs, reasons over them, and writes outputs. | That is what a CS cell is. | Underlies D3. |
+| A3 | A producer block usually corresponds to one execution — it reads its inputs, reasons over them, and writes outputs — but the database can retain its id across later revisions. | That is what a CS cell usually is. | Underlies D3; the retention case is why A6 isn't free. |
 | A4 | Staleness is decidable from one row. | Each version row carries its artifact's current head, so currency is known on read. | Structural. |
 | A5 | Version ids are stable and unique, and the head is authoritative. | CS ids are stable. | Naming degrades gracefully (D8); a real mix is still flagged. |
+| A6 | The producer-cell contraction is a DAG (grouping versions by producing cell yields no cycle). | Cells run forward and read only settled versions, so the grouping usually inherits that order. | Not implied by A1 — grouping an acyclic version graph by cell can still cycle if a producer id spans revisions. It is not schema-guaranteed and the gate does not validate it; on a cell cycle the audit can silently under-detect a mix, which validation and fail-closed would prevent (unbuilt). The D3 superset claim rests on this condition ([CELL-SUPERSET-THEOREM.md](CELL-SUPERSET-THEOREM.md)). |
 
 ## 3. What it checks, and what it refuses to
 
@@ -101,11 +102,14 @@ false negatives, so within the turn we take the lower bound and give every outpu
 inputs. Sibling outputs are peers, not ancestors, so they're excluded.
 
 The cost is directional. Aggregating to the cell can only add versions to a cone, never remove them,
-so on the acyclic provenance CS produces (A1) the cell-level audit flags a superset of what the raw
-per-output edges would: it never reports fewer mixes than the finer edges, only more. The
-over-approximation shows up as possible false positives, not as missed conflicts, which is the safe
-direction for a trust gate, and the finer per-output edges stay in the substrate, so a reviewer can
-drop back to them to see which output actually carried the conflict.
+so on a validated snapshot — both the artifact-version graph (A1) and its producer-cell contraction
+(A6) acyclic — the cell-level audit flags a superset of what the recorded per-output edges would: it
+never reports fewer mixes than the finer edges, only more. The over-approximation shows up as possible
+false positives, not as missed conflicts, which is the safe direction for a trust gate, and the finer
+per-output edges stay in the substrate, so a reviewer can drop back to them to see which output
+actually carried the conflict. This is relative to *recorded* edges, and the preconditions are not yet
+validated at run time (A1, A6). The full statement and proof are in
+[CELL-SUPERSET-THEOREM.md](CELL-SUPERSET-THEOREM.md).
 
 This one nearly got "fixed" as a bug before we saw it was right. The flag applies to a cell that
 consumed two divergent versions. A cell that only revised its own output — wrote v1, then v2 — isn't
@@ -138,10 +142,11 @@ from a since-superseded source. The foundation audit catches that.
 
 ### D8 — Deterministic, and a detected mix is never dropped quietly
 Every verdict is a pure function of the graph: topological order with id tie-breaks, head-join
-currency, set-based cones, issue naming by the lowest version id. When a mix is detected it is always
-reported. On corrupt or partial data it is reported with degraded naming rather than crashing or going
-clean. The worst thing a trust gate can do is report clean when it isn't, so the code fails loud
-rather than quiet.
+currency, set-based cones, issue naming by the lowest version id. When a mix is *detected* it is always
+reported — on corrupt or partial data with degraded naming rather than crashing or a silent clean. The
+gap is earlier: on a producer-cell cycle (A6) the toposort falls back to id order and seeds a missing
+cone as a singleton, dropping ancestry, so a real mix can go undetected — a false clean. The gate does not guard against this yet; validating the cell contraction
+and failing closed is unbuilt ([CELL-SUPERSET-THEOREM.md](CELL-SUPERSET-THEOREM.md) §5–§6).
 
 ### D9 — The kernel gate
 `core/` and the in-CS reader are inlined into one `kernel.py` that has to load under CS's loader: no
@@ -178,7 +183,10 @@ a person in the loop is that the cockpit page can't call the skill (see [HEADROO
 - No faithfulness check yet.
 - The conservative input rule over-flags downstream of a cell that read two divergent versions of one
   artifact (D3). That's the safe direction, and the cell itself is flagged too.
-- Cycle handling is best-effort and order-dependent, on an input that can't occur in valid data (A1).
+- Cycle handling is best-effort and order-dependent. A version cycle can't occur in valid data (A1); a
+  producer-cell cycle can (A6) — it is not schema-guaranteed — and can make the audit silently
+  under-detect a mix (a false clean). Validating this and failing closed is required hardening the gate
+  does not yet enforce (A6; [CELL-SUPERSET-THEOREM.md](CELL-SUPERSET-THEOREM.md) §5–§6).
 - No effectiveness numbers. How often it catches something a reviewer would have missed, and how often
   that matters, is for the eval harness.
 
