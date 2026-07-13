@@ -144,7 +144,9 @@ def _ids_in(conn: sqlite3.Connection, table: str, column: str,
         ids.extend(
             row[0]
             for row in conn.execute(
-                f"SELECT id FROM {_quote(table)} WHERE {_quote(column)} IN ({placeholders})", chunk
+                f"SELECT id FROM {_quote(table)} WHERE {_quote(column)} IN ({placeholders})"
+                " ORDER BY id",
+                chunk,
             )
         )
     return ids
