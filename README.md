@@ -65,7 +65,8 @@ graph.
 
 - Done: the two checks, all six functions, and the cockpit — tested and run against live CS projects.
 - Not yet: publishing the skill, which is what lets the agent run the pre-write check on its own.
-- Later: effectiveness numbers, from the eval-harness stream.
+- Measured: one scenario, 24 unattended rollouts — six silently shipped a mixed-version package
+  ([docs/PBMC-ROLLOUT-RESULTS.md](docs/PBMC-ROLLOUT-RESULTS.md)).
 
 ## Room to explore
 
@@ -83,6 +84,8 @@ Things we'd add next. Some were cut for time, some wait on the substrate (see
 
 - [docs/DESIGN-RATIONALE.md](docs/DESIGN-RATIONALE.md) — assumptions, the design decisions and why,
   scope, and limitations.
+- [docs/PBMC-ROLLOUT-RESULTS.md](docs/PBMC-ROLLOUT-RESULTS.md) — 24 unattended rollouts of the PBMC
+  provenance-conflict scenario: every attempt's grade and how they were graded.
 - `src/provenance_gate/core/` — model, derive, audit.
 - `design/build_skill.py` — the build that inlines core into `kernel.py`.
 - `ui/cockpit.html` — the cockpit.
