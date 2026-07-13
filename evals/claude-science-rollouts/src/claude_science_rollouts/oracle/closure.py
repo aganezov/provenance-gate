@@ -1,4 +1,4 @@
-"""Raw-SQL upstream closure over consumption edges — the oracle's independent traversal.
+"""Raw-SQL upstream closure over consumption edges — the harness's own independent traversal.
 
 This is deliberately a recursive SQL CTE, not a Python graph walk: the evaluation must not
 reuse the gate's subgraph extraction. It follows only ``artifact_dependencies`` (what a

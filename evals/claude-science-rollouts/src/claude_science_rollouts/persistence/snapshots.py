@@ -186,6 +186,16 @@ def _capture(
     return _PollingSnapshot(directory, path, observation)
 
 
+def _observation_ready(observation: object) -> bool:
+    # a not-ready observation (a still-writing turn) must not count as a settled outcome even when
+    # two adjacent polls compare equal. an observation without a `ready` flag — project rows — is
+    # always eligible, so project-snapshot stability is unchanged.
+    ready = getattr(observation, "ready", True)
+    if not isinstance(ready, bool):
+        raise TypeError("observation readiness must be boolean")
+    return ready
+
+
 async def await_stable_project_snapshot(
     src_db: str | Path,
     project_id: str,
@@ -225,7 +235,11 @@ async def await_stable_project_snapshot(
             current = _capture(source, current_dir, project_id, observer)
             if monotonic() >= deadline:
                 raise SnapshotStabilityTimeout(attempts)
-            if previous is not None and current.observation == previous.observation:
+            if (
+                previous is not None
+                and current.observation == previous.observation
+                and _observation_ready(current.observation)
+            ):
                 current.directory.replace(final_dir)
                 final_path = final_dir / current.path.name
                 _remove_if_present(previous.directory, snapshot_root)
