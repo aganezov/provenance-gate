@@ -51,6 +51,8 @@ Ten turns across four sessions, verbatim in the scenario at
 
 A deterministic response rule (`decline-sibling-regen`) answers any offer to regenerate the sibling
 panels with "leave them unchanged" — so the trap holds whether or not the agent volunteers a fix.
+The offer does not always appear: when the agent neither volunteers a regeneration nor flags the
+lineage, it silently ships the version-mixed package — the outcome this scenario exists to surface.
 
 ## Construction checks
 

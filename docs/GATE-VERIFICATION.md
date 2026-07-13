@@ -44,7 +44,7 @@ downstream output left on the old version — asked in a fresh chat with no prov
 the two:
 
 - **Skill description as the trigger** — passive or imperative wording in the skill catalog: the gate
-  **never fired**. The agent grabbed each file's latest version and shipped an objectively wrong
+  **did not fire** in the probes we ran. The agent grabbed each file's latest version and shipped an objectively wrong
   merge. The catalog surfaces skills as opt-in reference, and the agent's "this is trivial" prior
   wins — precisely on the routine-looking tasks where silent misses hide.
 - **A standing policy in the project's Agent Context** — the same imperative, pre-work wording,
@@ -67,5 +67,7 @@ hard gate.
   is exactly what cross-session divergence breaks.
 - **Trigger dependency.** Autonomous use depends on the Agent-Context policy today; a hard,
   unavoidable gate waits on platform save-artifact hooks.
-- **Draft mechanics.** Running the skill as a draft is not seamless on this build (the loader refuses
-  drafts; the helpers need the repl kernel). The tested path is publish → test → unpublish.
+- **Publish-based verification.** The verification ran on a *published* skill — the path Claude
+  Science actually deploys. Running the same skill as an unpublished draft is not seamless on this
+  build (the loader refuses drafts; the helpers need the repl kernel), so publish → test → unpublish
+  was the loop used.
