@@ -22,12 +22,12 @@ from claude_science_rollouts.scenario.spec import ResponseRule, Scenario
 
 from .driver import BrowserDriver
 from .models import ChatObservation, Outcome
-from .r1 import (
-    R1ApprovalBudget,
-    R1ApprovalPolicy,
-    R1Execution,
-    R1TurnRequest,
-    run_r1_turn,
+from .turn import (
+    TurnApprovalBudget,
+    TurnApprovalPolicy,
+    TurnExecution,
+    TurnRequest,
+    run_turn,
 )
 
 
@@ -67,9 +67,9 @@ class _EpisodeStop(RuntimeError):
         self.reason = reason
 
 
-def approval_policy_for_scenario(scenario: Scenario) -> R1ApprovalPolicy:
-    """Map validated scenario policy into the runtime-owned R1 bound."""
-    return R1ApprovalPolicy(
+def approval_policy_for_scenario(scenario: Scenario) -> TurnApprovalPolicy:
+    """Map validated scenario policy into the runtime-owned approval bound."""
+    return TurnApprovalPolicy(
         scenario.approval_policy.action,
         scenario.approval_policy.max_approvals,
     )
@@ -106,7 +106,7 @@ def matches_response_rule(rule: ResponseRule, observation: ChatObservation) -> b
     return "regenerate" in assistant_text and any(term in assistant_text for term in branch_terms)
 
 
-def _turn_record(turn_id: str, execution: R1Execution) -> dict[str, Any]:
+def _turn_record(turn_id: str, execution: TurnExecution) -> dict[str, Any]:
     final = execution.final
     result = final.result
     delivery = result.delivery if result is not None else None
@@ -139,7 +139,7 @@ def _turn_record(turn_id: str, execution: R1Execution) -> dict[str, Any]:
     }
 
 
-def _turn_stop_reason(execution: R1Execution) -> str | None:
+def _turn_stop_reason(execution: TurnExecution) -> str | None:
     if execution.final.outcome != "completed":
         return f"turn_{execution.final.outcome}"
     if execution.stop_reason != "settled":
@@ -157,7 +157,7 @@ class EpisodeExecutor:
         evidence = EpisodeEvidence(scenario.scenario_id, config.project_id)
         plan = compile_scenario(scenario, trial=config.trial_variant)
         policy = approval_policy_for_scenario(scenario)
-        approval_budget = R1ApprovalBudget.from_policy(policy)
+        approval_budget = TurnApprovalBudget.from_policy(policy)
         chats: dict[str, str] = {}
         roots: dict[str, str] = {}
         checkpoint_by_id = {item["id"]: item for item in scenario.checkpoints}
@@ -265,7 +265,7 @@ class EpisodeExecutor:
         scenario: Scenario,
         plan: tuple[Step, ...],
         config: EpisodeConfig,
-        approval_budget: R1ApprovalBudget,
+        approval_budget: TurnApprovalBudget,
         chats: dict[str, str],
         roots: dict[str, str],
         checkpoint_by_id: dict[str, dict[str, Any]],
@@ -390,14 +390,14 @@ class EpisodeExecutor:
         turn_id: str,
         prompt: str,
         config: EpisodeConfig,
-        approval_budget: R1ApprovalBudget,
+        approval_budget: TurnApprovalBudget,
         chats: dict[str, str],
         roots: dict[str, str],
-    ) -> R1Execution:
+    ) -> TurnExecution:
         root = roots.get(session)
-        return run_r1_turn(
+        return run_turn(
             self.driver,
-            R1TurnRequest(
+            TurnRequest(
                 project_id=config.project_id,
                 chat_id=chats[session],
                 root_mode="existing" if root else "new",
@@ -415,7 +415,7 @@ class EpisodeExecutor:
         rule: ResponseRule,
         session: str,
         config: EpisodeConfig,
-        approval_budget: R1ApprovalBudget,
+        approval_budget: TurnApprovalBudget,
         chats: dict[str, str],
         roots: dict[str, str],
         evidence: EpisodeEvidence,

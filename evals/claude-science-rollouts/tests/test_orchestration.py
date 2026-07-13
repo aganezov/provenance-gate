@@ -1,4 +1,4 @@
-"""Contract tests for the runtime driver seam, fake, and R1 state machine."""
+"""Contract tests for the runtime driver seam, fake, and turn state machine."""
 
 from __future__ import annotations
 
@@ -18,12 +18,12 @@ from claude_science_rollouts.orchestration.models import (
     TurnContinuation,
     TurnResult,
 )
-from claude_science_rollouts.orchestration.r1 import (
-    R1ApprovalPolicy,
-    R1LimitError,
-    R1ProtocolError,
-    R1TurnRequest,
-    run_r1_turn,
+from claude_science_rollouts.orchestration.turn import (
+    TurnApprovalPolicy,
+    TurnLimitError,
+    TurnProtocolError,
+    TurnRequest,
+    run_turn,
 )
 
 _AUTHORED_SHA = "a" * 64
@@ -146,7 +146,7 @@ def _resolved(card_id: str, decision: str) -> ApprovalResolved:
     )
 
 
-def _request(**overrides) -> R1TurnRequest:
+def _request(**overrides) -> TurnRequest:
     values = {
         "project_id": "project-1",
         "chat_id": "chat-1",
@@ -157,7 +157,7 @@ def _request(**overrides) -> R1TurnRequest:
         "deadline_ms": 30_000,
     }
     values.update(overrides)
-    return R1TurnRequest(**values)
+    return TurnRequest(**values)
 
 
 def test_fake_structurally_conforms_to_complete_driver_protocol() -> None:
@@ -168,13 +168,13 @@ def test_fake_structurally_conforms_to_complete_driver_protocol() -> None:
 @pytest.mark.parametrize(
     "factory",
     [
-        lambda: R1ApprovalPolicy("allow_for_conversation", 1.5),
-        lambda: R1ApprovalPolicy("deny", 0.0),
+        lambda: TurnApprovalPolicy("allow_for_conversation", 1.5),
+        lambda: TurnApprovalPolicy("deny", 0.0),
         lambda: _request(deadline_ms=1.5),
         lambda: _request(max_waits=1.5),
     ],
 )
-def test_r1_policy_bounds_reject_fractional_values(factory) -> None:
+def test_turn_policy_bounds_reject_fractional_values(factory) -> None:
     with pytest.raises(ValueError):
         factory()
 
@@ -256,20 +256,20 @@ def test_turn_result_rejects_mismatched_prompt_proof_identities(
         )
 
 
-def test_r1_rejects_result_for_different_authored_prompt() -> None:
+def test_turn_rejects_result_for_different_authored_prompt() -> None:
     driver = FakeBrowserDriver(
         "session-1",
         "http://127.0.0.1:8765",
         {"submit_turn_wait": [_completed(_settled(authored_sha="b" * 64))]},
     )
 
-    with pytest.raises(R1ProtocolError, match="authored prompt identity"):
-        run_r1_turn(driver, _request())
+    with pytest.raises(TurnProtocolError, match="authored prompt identity"):
+        run_turn(driver, _request())
 
     assert [call.operation for call in driver.calls] == ["submit_turn_wait"]
 
 
-def test_r1_settled_submission_submits_exactly_once() -> None:
+def test_turn_settled_submission_submits_exactly_once() -> None:
     final = _completed(_settled())
     driver = FakeBrowserDriver(
         "session-1",
@@ -277,7 +277,7 @@ def test_r1_settled_submission_submits_exactly_once() -> None:
         {"submit_turn_wait": [final]},
     )
 
-    execution = run_r1_turn(driver, _request())
+    execution = run_turn(driver, _request())
 
     assert execution.final is final
     assert execution.wait_count == 0
@@ -286,7 +286,7 @@ def test_r1_settled_submission_submits_exactly_once() -> None:
     driver.assert_consumed()
 
 
-def test_r1_existing_root_is_forwarded_and_must_not_be_recreated() -> None:
+def test_turn_existing_root_is_forwarded_and_must_not_be_recreated() -> None:
     final = _completed(_settled(root_created=False))
     driver = FakeBrowserDriver(
         "session-1",
@@ -294,7 +294,7 @@ def test_r1_existing_root_is_forwarded_and_must_not_be_recreated() -> None:
         {"submit_turn_wait": [final]},
     )
 
-    execution = run_r1_turn(
+    execution = run_turn(
         driver,
         _request(root_mode="existing", root_frame_id="root-1"),
     )
@@ -304,7 +304,7 @@ def test_r1_existing_root_is_forwarded_and_must_not_be_recreated() -> None:
     driver.assert_consumed()
 
 
-def test_r1_approval_uses_exact_card_then_waits_without_replay() -> None:
+def test_turn_approval_uses_exact_card_then_waits_without_replay() -> None:
     first = _approval("card-1", "fingerprint-1", turn_id="turn-user-1")
     continuation = first.continuation
     driver = FakeBrowserDriver(
@@ -317,10 +317,10 @@ def test_r1_approval_uses_exact_card_then_waits_without_replay() -> None:
         },
     )
 
-    execution = run_r1_turn(
+    execution = run_turn(
         driver,
         _request(),
-        approval_policy=R1ApprovalPolicy("allow_for_conversation", 1),
+        approval_policy=TurnApprovalPolicy("allow_for_conversation", 1),
     )
 
     assert execution.final.result.turn_state == "settled"
@@ -337,7 +337,7 @@ def test_r1_approval_uses_exact_card_then_waits_without_replay() -> None:
     driver.assert_consumed()
 
 
-def test_r1_approval_limit_denies_then_stops_policy_exceeded() -> None:
+def test_turn_approval_limit_denies_then_stops_policy_exceeded() -> None:
     first = _approval("card-1", "fingerprint-1", turn_id="turn-user-1")
     second = _approval("card-2", "fingerprint-2", turn_id="turn-user-2")
     driver = FakeBrowserDriver(
@@ -353,10 +353,10 @@ def test_r1_approval_limit_denies_then_stops_policy_exceeded() -> None:
         },
     )
 
-    execution = run_r1_turn(
+    execution = run_turn(
         driver,
         _request(),
-        approval_policy=R1ApprovalPolicy("allow_for_conversation", 1),
+        approval_policy=TurnApprovalPolicy("allow_for_conversation", 1),
     )
 
     decisions = [call.arguments[4] for call in driver.calls if call.operation == "resolve_approval"]
@@ -374,7 +374,7 @@ def test_r1_approval_limit_denies_then_stops_policy_exceeded() -> None:
     "state",
     ["input_required", "indeterminate", "navigation_drift", "failed"],
 )
-def test_r1_returns_terminal_observations_without_polling(state: str) -> None:
+def test_turn_returns_terminal_observations_without_polling(state: str) -> None:
     terminal = _completed(_unsettled(state))
     driver = FakeBrowserDriver(
         "session-1",
@@ -382,7 +382,7 @@ def test_r1_returns_terminal_observations_without_polling(state: str) -> None:
         {"submit_turn_wait": [terminal]},
     )
 
-    execution = run_r1_turn(driver, _request())
+    execution = run_turn(driver, _request())
 
     assert execution.final is terminal
     assert execution.stop_reason == "terminal_observation"
@@ -405,21 +405,21 @@ def test_r1_returns_terminal_observations_without_polling(state: str) -> None:
         ),
     ],
 )
-def test_r1_rejects_ambiguous_approval_cards(cards: tuple[ApprovalCard, ...]) -> None:
+def test_turn_rejects_ambiguous_approval_cards(cards: tuple[ApprovalCard, ...]) -> None:
     driver = FakeBrowserDriver(
         "session-1",
         "http://127.0.0.1:8765",
         {"submit_turn_wait": [_completed(_approval_with_cards(cards))]},
     )
 
-    with pytest.raises(R1ProtocolError, match="exactly one actionable card"):
-        run_r1_turn(driver, _request())
+    with pytest.raises(TurnProtocolError, match="exactly one actionable card"):
+        run_turn(driver, _request())
 
     assert [call.operation for call in driver.calls] == ["submit_turn_wait"]
     driver.assert_consumed()
 
 
-def test_r1_wait_limit_stops_without_extra_wait_or_replay() -> None:
+def test_turn_wait_limit_stops_without_extra_wait_or_replay() -> None:
     busy = _completed(_unsettled("busy"))
     driver = FakeBrowserDriver(
         "session-1",
@@ -430,14 +430,14 @@ def test_r1_wait_limit_stops_without_extra_wait_or_replay() -> None:
         },
     )
 
-    with pytest.raises(R1LimitError, match="within 1 waits"):
-        run_r1_turn(driver, _request(max_waits=1))
+    with pytest.raises(TurnLimitError, match="within 1 waits"):
+        run_turn(driver, _request(max_waits=1))
 
     assert [call.operation for call in driver.calls] == ["submit_turn_wait", "wait_turn"]
     driver.assert_consumed()
 
 
-def test_r1_rejects_root_drift_after_first_observation() -> None:
+def test_turn_rejects_root_drift_after_first_observation() -> None:
     first = _approval("card-1", "fingerprint-1", turn_id="turn-user-1")
     driver = FakeBrowserDriver(
         "session-1",
@@ -449,11 +449,11 @@ def test_r1_rejects_root_drift_after_first_observation() -> None:
         },
     )
 
-    with pytest.raises(R1ProtocolError, match="root identity mismatch"):
-        run_r1_turn(
+    with pytest.raises(TurnProtocolError, match="root identity mismatch"):
+        run_turn(
             driver,
             _request(),
-            approval_policy=R1ApprovalPolicy("allow_for_conversation", 1),
+            approval_policy=TurnApprovalPolicy("allow_for_conversation", 1),
         )
 
     assert [call.operation for call in driver.calls] == [
@@ -464,7 +464,7 @@ def test_r1_rejects_root_drift_after_first_observation() -> None:
     driver.assert_consumed()
 
 
-def test_r1_propagates_unknown_submission_without_retry() -> None:
+def test_turn_propagates_unknown_submission_without_retry() -> None:
     unknown = _unknown()
     driver = FakeBrowserDriver(
         "session-1",
@@ -472,7 +472,7 @@ def test_r1_propagates_unknown_submission_without_retry() -> None:
         {"submit_turn_wait": [unknown]},
     )
 
-    execution = run_r1_turn(driver, _request())
+    execution = run_turn(driver, _request())
 
     assert execution.final is unknown
     assert execution.final.outcome == "unknown_outcome"
@@ -480,7 +480,7 @@ def test_r1_propagates_unknown_submission_without_retry() -> None:
     driver.assert_consumed()
 
 
-def test_r1_propagates_unknown_approval_without_wait_or_replay() -> None:
+def test_turn_propagates_unknown_approval_without_wait_or_replay() -> None:
     first = _approval("card-1", "fingerprint-1", turn_id="turn-user-1")
     driver = FakeBrowserDriver(
         "session-1",
@@ -491,7 +491,7 @@ def test_r1_propagates_unknown_approval_without_wait_or_replay() -> None:
         },
     )
 
-    execution = run_r1_turn(driver, _request())
+    execution = run_turn(driver, _request())
 
     assert execution.final.outcome == "unknown_outcome"
     assert [call.operation for call in driver.calls] == [
@@ -501,7 +501,7 @@ def test_r1_propagates_unknown_approval_without_wait_or_replay() -> None:
     driver.assert_consumed()
 
 
-def test_r1_rejects_mismatched_completed_approval_echo() -> None:
+def test_turn_rejects_mismatched_completed_approval_echo() -> None:
     first = _approval("card-1", "fingerprint-1", turn_id="turn-user-1")
     driver = FakeBrowserDriver(
         "session-1",
@@ -512,8 +512,8 @@ def test_r1_rejects_mismatched_completed_approval_echo() -> None:
         },
     )
 
-    with pytest.raises(R1ProtocolError, match="approval result identity"):
-        run_r1_turn(driver, _request())
+    with pytest.raises(TurnProtocolError, match="approval result identity"):
+        run_turn(driver, _request())
 
     assert [call.operation for call in driver.calls] == [
         "submit_turn_wait",
