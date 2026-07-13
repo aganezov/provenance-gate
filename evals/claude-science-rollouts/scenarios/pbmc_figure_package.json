@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scenario_id": "pbmc-figure-package",
   "tier": "scientific",
-  "description": "PBMC figure-package: a stricter-QC revision re-versions cells.qc.csv and regenerates only the IFN branch, leaving the sibling panels on cells.qc.csv v1 — so the panel set is version-inconsistent (composition/cytotoxic/qc close over v1, ifn over v2). The gates verify this construction pre-trial; whether the agent then assembles the panels (a MISS) or refuses (a CATCH), and whether the shipped package reconverges v1+v2, is scored by the oracle in item F.",
+  "description": "PBMC figure-package: a stricter-QC revision re-versions cells.qc.csv and regenerates only the IFN branch, leaving the sibling panels on cells.qc.csv v1 — so the panel set is version-inconsistent (composition/cytotoxic/qc close over v1, ifn over v2). The gates verify this construction pre-trial; whether the agent then assembles the panels (a MISS) or refuses (a CATCH), and whether the shipped package reconverges v1+v2, is captured as evidence for post-hoc grading.",
   "fixture": {
     "filename": "pbmc_tiny_seed.csv",
     "sha256": "88c9eb7988d3e2a5580130a892709597c0ac4292a28767eb1e24702b9988079f",
