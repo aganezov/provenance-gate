@@ -32,6 +32,7 @@ from claude_science_rollouts.persistence.responses import (
 from claude_science_rollouts.persistence.snapshots import (
     SnapshotBarrierConfig,
     await_stable_project_snapshot,
+    observe_project_settled,
 )
 from claude_science_rollouts.scenario.checkpoints import evaluate_checkpoints
 from claude_science_rollouts.scenario.compiler import Step, compile_scenario
@@ -64,6 +65,11 @@ class EpisodeConfig:
     trial_variant: str = "bare"
     deadline_ms: int = 120_000
     snapshot: SnapshotBarrierConfig = SnapshotBarrierConfig()
+    # A checkpoint always evaluates and records; this only decides whether a failed GATE-mode
+    # checkpoint also stops the rollout. Generation leaves it off — a divergence is captured and
+    # the run continues so a post-hoc grader sees the whole rollout — while the gate-mode
+    # declaration and the stop path in _evaluate_gate stay as a disabled early-stop capability.
+    halt_on_checkpoint_gate: bool = False
 
     def __post_init__(self) -> None:
         if not self.episode_id or not self.project_id:
@@ -709,44 +715,41 @@ class EpisodeExecutor:
         config: EpisodeConfig,
         evidence: EpisodeEvidence,
     ) -> None:
-        work_root = config.run_dir / ".checkpoint-work"
-        work_root.mkdir(parents=True, exist_ok=True)
+        # Persist a settled, project-scoped snapshot for this checkpoint, then evaluate the
+        # authored assertions against those exact bytes and record the result. Evaluation is an
+        # annotation for the grader — it never halts the run unless halt_on_checkpoint_gate is set.
+        snapshot, attempts = await self._materialize_labeled_snapshot(
+            config, "checkpoints", checkpoint["id"]
+        )
+        conn = open_readonly(snapshot.path)
         try:
-            with tempfile.TemporaryDirectory(dir=work_root) as temporary:
-                stable = await await_stable_project_snapshot(
-                    config.source_db,
-                    config.project_id,
-                    Path(temporary),
-                    config=config.snapshot,
-                )
-                conn = open_readonly(stable.path)
-                try:
-                    result = evaluate_checkpoints(conn, config.project_id, [checkpoint])[0]
-                finally:
-                    conn.close()
+            result = evaluate_checkpoints(conn, config.project_id, [checkpoint])[0]
         finally:
-            if work_root.exists() and not any(work_root.iterdir()):
-                work_root.rmdir()
+            conn.close()
         evidence.checkpoints.append(
             {
                 "id": result.id,
                 "mode": result.mode,
                 "passed": result.passed,
-                "stability_attempts": stable.attempts,
+                "stability_attempts": attempts,
+                "snapshot_path": str(snapshot.path),
+                "snapshot_sha256": snapshot.sha256,
                 "assertions": [
                     {"kind": assertion.kind, "ok": assertion.ok, "detail": assertion.detail}
                     for assertion in result.assertions
                 ],
             }
         )
-        if result.mode == "gate" and not result.passed:
+        if config.halt_on_checkpoint_gate and result.mode == "gate" and not result.passed:
             raise _EpisodeStop(f"checkpoint_failed_{result.id}")
 
-    async def _materialize_final_snapshot(
-        self, config: EpisodeConfig
+    async def _materialize_labeled_snapshot(
+        self, config: EpisodeConfig, *label: str
     ) -> tuple[ProjectSnapshot, int]:
-        """Freeze the project's terminal evidence into one reduced, integrity-checked snapshot."""
-        work_root = config.run_dir / ".final-work"
+        """Await a settled project snapshot and freeze it to ``snapshots/<label...>/project.db``,
+        integrity-checked. The final snapshot and every per-checkpoint snapshot are the same kind of
+        evidence, labelled differently, so a post-hoc grader reads settled bytes at each point."""
+        work_root = config.run_dir / ".snapshot-work"
         work_root.mkdir(parents=True, exist_ok=True)
         try:
             with tempfile.TemporaryDirectory(dir=work_root) as temporary:
@@ -755,8 +758,9 @@ class EpisodeExecutor:
                     config.project_id,
                     Path(temporary),
                     config=config.snapshot,
+                    observer=observe_project_settled,
                 )
-                destination = _reduced_snapshot_path(config.run_dir, "final", "project.db")
+                destination = _reduced_snapshot_path(config.run_dir, *label, "project.db")
                 snapshot = materialize_project_snapshot(
                     stable.path, destination, config.project_id
                 )
@@ -764,6 +768,12 @@ class EpisodeExecutor:
             if work_root.exists() and not any(work_root.iterdir()):
                 work_root.rmdir()
         return snapshot, stable.attempts
+
+    async def _materialize_final_snapshot(
+        self, config: EpisodeConfig
+    ) -> tuple[ProjectSnapshot, int]:
+        """Freeze the project's terminal evidence into one reduced, integrity-checked snapshot."""
+        return await self._materialize_labeled_snapshot(config, "final")
 
     def _regrade_final_turn(
         self,

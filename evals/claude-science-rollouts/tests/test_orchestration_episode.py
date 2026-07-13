@@ -186,7 +186,13 @@ def _minimal_scenario(*, approval_policy: ApprovalPolicy | None = None) -> Scena
     )
 
 
-def _config(tmp_path: Path, source_db: Path, fixture: Path | None = None) -> EpisodeConfig:
+def _config(
+    tmp_path: Path,
+    source_db: Path,
+    fixture: Path | None = None,
+    *,
+    halt_on_checkpoint_gate: bool = False,
+) -> EpisodeConfig:
     return EpisodeConfig(
         episode_id="episode-1",
         project_id=_PROJECT,
@@ -195,6 +201,7 @@ def _config(tmp_path: Path, source_db: Path, fixture: Path | None = None) -> Epi
         fixture_path=fixture,
         deadline_ms=30_000,
         snapshot=SnapshotBarrierConfig(poll_interval_seconds=0, timeout_seconds=2),
+        halt_on_checkpoint_gate=halt_on_checkpoint_gate,
     )
 
 
@@ -418,10 +425,15 @@ def test_pbmc_episode_executes_full_plan_and_persists_compact_evidence(tmp_path:
     # the final turn's evidence is re-bound to the immutable reduced snapshot before finalizing.
     assert reader.snapshot_reads == [tmp_path / "run" / "snapshots" / "final" / "project.db"]
 
-    assert len(list((tmp_path / "run").rglob("*.db"))) == 1
+    # one settled snapshot persisted per checkpoint (for the post-hoc grader) plus the final one.
+    checkpoint_ids = ["baseline-qc", "baseline-branches", "strict-qc-reversion", "strict-ifn-panel"]
+    assert len(list((tmp_path / "run").rglob("*.db"))) == len(checkpoint_ids) + 1
     assert manifest["final_snapshot"]["path"] == "snapshots/final/project.db"
-    assert not (tmp_path / "run" / ".checkpoint-work").exists()
-    assert not (tmp_path / "run" / ".final-work").exists()
+    for item in manifest["checkpoints"]:
+        expected = tmp_path / "run" / "snapshots" / "checkpoints" / item["id"] / "project.db"
+        assert item["snapshot_path"] == str(expected) and expected.is_file()
+        assert len(item["snapshot_sha256"]) == 64
+    assert not (tmp_path / "run" / ".snapshot-work").exists()
 
 
 def test_pbmc_approval_policy_maps_to_python_owned_limit() -> None:
@@ -647,7 +659,9 @@ def test_terminal_turn_state_finalizes_and_detaches_without_later_steps(
     driver.assert_consumed()
 
 
-def test_checkpoint_failure_stops_before_trial_and_detaches(tmp_path: Path) -> None:
+def test_checkpoint_failure_halts_when_gate_enabled(tmp_path: Path) -> None:
+    # halt_on_checkpoint_gate is the opt-in early-stop capability: a failed GATE-mode checkpoint
+    # stops the rollout before the trial. Generation leaves it off (next test).
     scenario = _minimal_scenario()
     source_db = tmp_path / "operon.db"
     _seed_db(source_db)
@@ -665,7 +679,9 @@ def test_checkpoint_failure_stops_before_trial_and_detaches(tmp_path: Path) -> N
     ]
     driver = FakeBrowserDriver("session-1", _ORIGIN, scripts)
 
-    result = asyncio.run(_executor(driver).run(scenario, _config(tmp_path, source_db)))
+    result = asyncio.run(
+        _executor(driver).run(scenario, _config(tmp_path, source_db, halt_on_checkpoint_gate=True))
+    )
 
     assert result.terminal_reason == "checkpoint_failed_gate"
     assert [call.operation for call in driver.calls].count("submit_turn_wait") == 1
@@ -673,6 +689,41 @@ def test_checkpoint_failure_stops_before_trial_and_detaches(tmp_path: Path) -> N
     assert manifest["checkpoints"][0]["passed"] is False
     assert manifest["checkpoints"][0]["stability_attempts"] == 2
     assert [call.operation for call in driver.calls][-1] == "detach"
+    driver.assert_consumed()
+
+
+def test_failed_checkpoint_records_but_does_not_halt_by_default(tmp_path: Path) -> None:
+    # the generation default: a failed gate checkpoint is recorded as evidence (with its own settled
+    # snapshot) and the rollout runs to completion, so a post-hoc grader sees the whole divergent
+    # construction — not a run truncated at the first stumble.
+    scenario = _minimal_scenario()
+    source_db = tmp_path / "operon.db"
+    _seed_db(source_db)  # no artifact -> the gate's version_exists assertion fails
+    scripts = _base_scripts()
+    scripts["submit_turn_wait"] = [
+        _completed(
+            _settled_turn(
+                "chat-1", "root-1", scenario.construction[0].prompt, 1, root_created=True
+            )
+        ),
+        _completed(
+            _settled_turn(
+                "chat-1", "root-1", scenario.trial.variants["bare"], 3, root_created=False
+            )
+        ),
+    ]
+    driver = FakeBrowserDriver("session-1", _ORIGIN, scripts)
+
+    result = asyncio.run(_executor(driver).run(scenario, _config(tmp_path, source_db)))
+
+    assert result.terminal_reason == "completed"                     # not halted
+    assert [call.operation for call in driver.calls].count("submit_turn_wait") == 2
+    manifest = json.loads(result.manifest_path.read_text())
+    assert manifest["checkpoints"][0]["passed"] is False   # ...but the failure is recorded
+    # and the failed checkpoint still persisted its settled snapshot for the grader
+    gate_snapshot = tmp_path / "run" / "snapshots" / "checkpoints" / "gate" / "project.db"
+    assert gate_snapshot.is_file()
+    assert len(manifest["checkpoints"][0]["snapshot_sha256"]) == 64
     driver.assert_consumed()
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,7 @@ from claude_science_rollouts.persistence.snapshots import (
     await_stable_project_snapshot,
     cleanup_snapshot_path,
     observe_project,
+    observe_project_settled,
 )
 from operon_fixture import SCHEMA
 
@@ -129,6 +131,84 @@ def test_barrier_does_not_settle_on_a_stable_not_ready_observation(tmp_path: Pat
 
     assert result.attempts == 4
     assert result.observation == _ReadyObservation(True, "done")
+
+
+# operon-shaped schema WITH the dependency_mappings column, so observe_project_settled's readiness
+# logic is exercised (the artifact-only fixture SCHEMA has no such column).
+_SETTLING_SCHEMA = """
+CREATE TABLE projects(id TEXT PRIMARY KEY, name TEXT);
+CREATE TABLE artifacts(
+    id TEXT PRIMARY KEY, project_id TEXT, filename TEXT, latest_version_id TEXT);
+CREATE TABLE artifact_versions(
+    id TEXT PRIMARY KEY, artifact_id TEXT, version_number INTEGER,
+    parent_version_id TEXT, checksum TEXT, dependency_mappings TEXT);
+CREATE TABLE artifact_dependencies(
+    id TEXT PRIMARY KEY, artifact_version_id TEXT, depends_on_version_id TEXT, reference_name TEXT);
+"""
+
+
+def _mappings(*version_ids: str) -> str:
+    return json.dumps({"inputs": [{"filename": vid, "version_id": vid} for vid in version_ids]})
+
+
+def _settling_conn() -> sqlite3.Connection:
+    # two uploads (no declared inputs) plus a computed output declaring both as inputs.
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(_SETTLING_SCHEMA)
+    conn.execute("INSERT INTO projects VALUES('p', 'test')")
+    for aid, filename, vid in (
+        ("a_cells", "cells.csv", "v_cells"),
+        ("a_params", "qc_params.csv", "v_params"),
+        ("a_qc", "cells.qc.csv", "v_qc"),
+    ):
+        conn.execute("INSERT INTO artifacts VALUES(?, 'p', ?, ?)", (aid, filename, vid))
+    conn.execute("INSERT INTO artifact_versions VALUES('v_cells', 'a_cells', 1, NULL, 'c', NULL)")
+    conn.execute("INSERT INTO artifact_versions VALUES('v_params', 'a_params', 1, NULL, 'c', NULL)")
+    conn.execute(
+        "INSERT INTO artifact_versions VALUES('v_qc', 'a_qc', 1, NULL, 'c', ?)",
+        (_mappings("v_cells", "v_params"),),
+    )
+    conn.commit()
+    return conn
+
+
+def test_settled_observer_waits_until_declared_edges_land() -> None:
+    conn = _settling_conn()
+    # v_qc declares two inputs but no edges exist yet -> not settled.
+    assert observe_project_settled(conn, "p").ready is False
+    conn.execute("INSERT INTO artifact_dependencies VALUES('d1', 'v_qc', 'v_cells', 'cells.csv')")
+    conn.commit()
+    # one of the two declared inputs has an edge -> still not settled.
+    assert observe_project_settled(conn, "p").ready is False
+    conn.execute("INSERT INTO artifact_dependencies VALUES('d2', 'v_qc', 'v_params', 'qc.csv')")
+    conn.commit()
+    # both declared inputs now have edges -> settled.
+    assert observe_project_settled(conn, "p").ready is True
+
+
+def test_settled_observer_ignores_inputs_without_a_resolved_version_id() -> None:
+    conn = _settling_conn()
+    # an input CS hasn't resolved to a version can't be waited on, so it must not block the barrier.
+    conn.execute(
+        "UPDATE artifact_versions SET dependency_mappings = ? WHERE id = 'v_qc'",
+        (json.dumps({"inputs": [{"filename": "x.csv", "version_id": None}]}),),
+    )
+    conn.commit()
+    assert observe_project_settled(conn, "p").ready is True
+
+
+def test_settled_observer_ready_without_dependency_mappings_column() -> None:
+    # the artifact-only fixtures have no dependency_mappings column: the observer must fall back to
+    # pure structural stability (vacuously ready), never error, so those operons still snapshot.
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(SCHEMA)
+    conn.execute("INSERT INTO projects VALUES('project-1', 'test')")
+    conn.execute("INSERT INTO artifacts VALUES('a', 'project-1', 'f.csv', 'v1')")
+    conn.execute("INSERT INTO artifact_versions VALUES('v1', 'a', 1, NULL, 'c')")
+    conn.commit()
+    observation = observe_project_settled(conn, "project-1")
+    assert observation.ready is True
+    assert observation.base.project == ("project-1", "test")
 
 
 class _Clock:
