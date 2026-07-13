@@ -14,6 +14,7 @@ import pytest
 
 from claude_science_rollouts.persistence.project_snapshot import (
     ProjectSnapshotError,
+    _select_in,
     materialize_project_snapshot,
 )
 from operon_fixture import Operon, diamond
@@ -122,3 +123,16 @@ def test_unknown_project_is_rejected(tmp_path: Path) -> None:
     source = _two_project_operon(tmp_path / "operon.db")
     with pytest.raises(ProjectSnapshotError, match="exactly one project row"):
         materialize_project_snapshot(source, tmp_path / "missing.db", "proj_missing")
+
+
+def test_select_in_chunks_under_the_sqlite_variable_limit() -> None:
+    # a project with more ids than SQLite's variable cap (999 on older builds) must still copy; the
+    # IN clause is chunked, so a 1500-id read stays under a cap we pin low here to prove it.
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE t(id TEXT PRIMARY KEY, k TEXT)")
+    conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+    ids = [f"id-{i:04d}" for i in range(1500)]
+    conn.executemany("INSERT INTO t VALUES(?, 'x')", [(value,) for value in ids])
+    rows = _select_in(conn, "t", "id", ids)
+    assert len(rows) == 1500
+    assert {row[0] for row in rows} == set(ids)

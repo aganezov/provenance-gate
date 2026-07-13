@@ -658,3 +658,21 @@ def test_confirm_terminal_candidate_returns_a_stable_failure(tmp_path: Path) -> 
     assert candidate.root_status == "failed"
     assert candidate.stability_attempts == 2
     assert not work.exists()
+
+
+def test_malformed_mid_turn_message_does_not_abort_the_read(tmp_path: Path) -> None:
+    # a malformed sibling (content is not a list, e.g. an injected event) must not abort the read
+    # of a well-formed turn; the scan predicates skip it instead of raising.
+    malformed = ("user", "malformed-1", None)
+    source = _write_operon(
+        tmp_path / "live.db",
+        status="completed",
+        messages=[_USER_TURN, _INTERIM_TOOL_USE, malformed, _FINAL_PROSE],
+    )
+    conn = _readonly(source)
+    try:
+        observed = _observe_response(conn)
+    finally:
+        conn.close()
+    assert observed.ready is True
+    assert observed.assistant_text == "Update complete."

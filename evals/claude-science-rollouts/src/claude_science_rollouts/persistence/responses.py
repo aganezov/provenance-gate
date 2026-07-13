@@ -282,13 +282,27 @@ def _root_frame_messages(
     ).fetchall()
 
 
+def _scan_text(message: dict[str, Any]) -> str:
+    # text for scanning predicates (delivery uniqueness, turn boundary): a malformed sibling is
+    # simply not a match, so it yields "" rather than raising the way the authoritative
+    # _message_text does for the turn's own content.
+    try:
+        return _message_text(message)
+    except PersistedResponseError:
+        return ""
+
+
 def _delivers_prompt_once(raw: object, normalized_prompt: str) -> bool:
     # a genuine authored-prompt delivery is a user message (not a tool result) whose text carries
-    # the normalized prompt exactly once.
-    candidate = _parse_message(raw)
+    # the normalized prompt exactly once. this runs over every row to prove delivery uniqueness,
+    # so a malformed sibling must read as "not a delivery" instead of raising out of the scan.
+    try:
+        candidate = _parse_message(raw)
+    except PersistedResponseError:
+        return False
     if candidate.get("role") != "user" or _has_tool_result(candidate):
         return False
-    return " ".join(_message_text(candidate).split()).count(normalized_prompt) == 1
+    return " ".join(_scan_text(candidate).split()).count(normalized_prompt) == 1
 
 
 def _locate_authored_turn(
@@ -347,13 +361,17 @@ def _messages_after(
     for index, later_id, raw in rows:
         if int(index) <= user_index:
             continue
-        message = _parse_message(raw)
+        try:
+            message = _parse_message(raw)
+            _content_blocks(message)  # a malformed sibling is not a turn message; drop it below
+        except PersistedResponseError:
+            continue
         # a later user message with real prose (not a tool result) opens the next turn and bounds
         # this one; tool-result user messages and injected [System] notices belong to the turn we
         # are still reading.
         if (
             message.get("role") == "user"
-            and _message_text(message)
+            and _scan_text(message)
             and not _has_tool_result(message)
             and not _is_system_notice(message)
         ):
@@ -547,7 +565,9 @@ def observe_persisted_input_request(
         authored_prompt_sha256=authored_prompt_sha256,
     )
     if user_sha256 is None or not later:
-        return _InputRequestObservation(False, project_id, root_frame_id, user_turn_id)
+        return _InputRequestObservation(
+            False, project_id, root_frame_id, user_turn_id, user_text_sha256=user_sha256
+        )
 
     assistant_texts: list[str] = []
     requests: dict[str, tuple[str, dict[str, Any]]] = {}

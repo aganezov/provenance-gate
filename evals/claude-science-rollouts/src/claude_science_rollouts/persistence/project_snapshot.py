@@ -84,18 +84,28 @@ def _select(conn: sqlite3.Connection, sql: str, params: Sequence[object] = ()) -
     return [tuple(row) for row in conn.execute(sql, tuple(params))]
 
 
+# SQLite's SQLITE_LIMIT_VARIABLE_NUMBER is 999 on older builds; keep every IN clause under it.
+_SQL_VAR_CHUNK = 900
+
+
 def _select_in(conn: sqlite3.Connection, table: str, column: str,
                values: Sequence[object]) -> list[Row]:
     if not values or not _has_table(conn, table):
         return []
-    placeholders = ",".join("?" for _ in values)
-    # order by rowid so the copy's row layout (and thus its fingerprint) is fixed by the source's
-    # own insertion order rather than by whatever scan order sqlite happens to choose.
-    return _select(
-        conn,
-        f"SELECT * FROM {_quote(table)} WHERE {_quote(column)} IN ({placeholders}) ORDER BY rowid",
-        values,
-    )
+    # chunk the IN list so a project with more frames/versions than the variable limit still copies.
+    # order by rowid within each chunk so the copy's layout and fingerprint follow the source's own
+    # insertion order rather than whatever scan order sqlite happens to choose.
+    rows: list[Row] = []
+    for start in range(0, len(values), _SQL_VAR_CHUNK):
+        chunk = values[start:start + _SQL_VAR_CHUNK]
+        placeholders = ",".join("?" for _ in chunk)
+        rows.extend(_select(
+            conn,
+            f"SELECT * FROM {_quote(table)} WHERE {_quote(column)} IN ({placeholders})"
+            " ORDER BY rowid",
+            chunk,
+        ))
+    return rows
 
 
 def _select_owned(conn: sqlite3.Connection, table: str, project_id: str) -> list[Row]:
@@ -108,27 +118,52 @@ def _select_owned(conn: sqlite3.Connection, table: str, project_id: str) -> list
     )
 
 
+def _ids_owned(conn: sqlite3.Connection, table: str, project_id: str) -> list[object]:
+    # collect ids by an explicit SELECT id, never row[0] over SELECT *, so a column added before id
+    # in the operon can't silently misread the key every dependent read is scoped by.
+    if not _has_table(conn, table):
+        return []
+    return [
+        row[0]
+        for row in conn.execute(
+            f"SELECT id FROM {_quote(table)} WHERE project_id = ? ORDER BY id", (project_id,)
+        )
+    ]
+
+
+def _ids_in(conn: sqlite3.Connection, table: str, column: str,
+            values: Sequence[object]) -> list[object]:
+    # explicit-id collection for a table scoped by a foreign key rather than project_id
+    # (artifact_versions hangs off artifact_id), chunked under the SQLite variable limit.
+    if not values or not _has_table(conn, table):
+        return []
+    ids: list[object] = []
+    for start in range(0, len(values), _SQL_VAR_CHUNK):
+        chunk = values[start:start + _SQL_VAR_CHUNK]
+        placeholders = ",".join("?" for _ in chunk)
+        ids.extend(
+            row[0]
+            for row in conn.execute(
+                f"SELECT id FROM {_quote(table)} WHERE {_quote(column)} IN ({placeholders})", chunk
+            )
+        )
+    return ids
+
+
 def _verification_checks(conn: sqlite3.Connection, frame_ids: Sequence[object],
                          version_ids: Sequence[object]) -> list[Row]:
     # a check is in scope when it was raised on one of the project's frames, reviewed by one of
-    # them, or attached to one of the project's artifact versions.
-    clauses: list[str] = []
-    params: list[object] = []
+    # them, or attached to one of the project's artifact versions. read each leg through the chunked
+    # _select_in and de-duplicate on the whole row, since one check can satisfy more than one leg.
+    seen: dict[Row, None] = {}
     for column, values in (
         ("root_frame_id", frame_ids),
         ("reviewer_frame_id", frame_ids),
         ("artifact_version_id", version_ids),
     ):
-        if values:
-            clauses.append(f"{_quote(column)} IN ({','.join('?' for _ in values)})")
-            params.extend(values)
-    if not clauses:
-        return []
-    return _select(
-        conn,
-        "SELECT * FROM verification_checks WHERE " + " OR ".join(clauses) + " ORDER BY rowid",
-        params,
-    )
+        for row in _select_in(conn, "verification_checks", column, values):
+            seen.setdefault(row, None)
+    return list(seen)
 
 
 def _collect(source: sqlite3.Connection, project_id: str) -> dict[str, list[Row]]:
@@ -142,12 +177,12 @@ def _collect(source: sqlite3.Connection, project_id: str) -> dict[str, list[Row]
         )
 
     artifacts = _select_owned(source, "artifacts", project_id)
-    artifact_ids = [row[0] for row in artifacts]
+    artifact_ids = _ids_owned(source, "artifacts", project_id)
     versions = _select_in(source, "artifact_versions", "artifact_id", artifact_ids)
-    version_ids = [row[0] for row in versions]
+    version_ids = _ids_in(source, "artifact_versions", "artifact_id", artifact_ids)
 
     frames = _select_owned(source, "frames", project_id)
-    frame_ids = [row[0] for row in frames]
+    frame_ids = _ids_owned(source, "frames", project_id)
 
     selected: dict[str, list[Row]] = {
         "projects": project,
