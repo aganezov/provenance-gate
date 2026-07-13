@@ -504,6 +504,59 @@ def test_historical_response_offer_does_not_trigger_rule() -> None:
     assert matches_response_rule(rule, observation) is False
 
 
+def test_requested_ifn_regeneration_does_not_trigger_sibling_decline() -> None:
+    # Regression: the strict-IFN turn *asks* the agent to regenerate the IFN panel, so a routine
+    # "regenerate ... panel B" reply must not be read as an offer to touch the sibling panels.
+    # match_terms once included "panel", which fired on the requested IFN regeneration and injected
+    # the decline reply, manufacturing a version-acknowledgment the agent never volunteered.
+    rule = load_scenario(_SCENARIO_PATH).response_rules[0]
+    observation = ChatObservation(
+        _PROJECT,
+        "chat-1",
+        (
+            TurnObservation(
+                "assistant-ifn",
+                "assistant",
+                "Let me check there's no IFN figure image too, then regenerate both off the "
+                "current QC'd cells (v2, 15 cells) — updating ifn_signature.csv and panel_ifn.csv "
+                "(panel B).",
+                False,
+            ),
+        ),
+        1,
+        True,
+        "root-1",
+        "control-ifn",
+        "settled",
+        (),
+    )
+    assert matches_response_rule(rule, observation) is False
+
+
+def test_genuine_sibling_regen_offer_still_triggers_decline() -> None:
+    rule = load_scenario(_SCENARIO_PATH).response_rules[0]
+    observation = ChatObservation(
+        _PROJECT,
+        "chat-1",
+        (
+            TurnObservation(
+                "assistant-offer",
+                "assistant",
+                "I can also regenerate the composition and cytotoxic sibling panels under the "
+                "new QC if you want them consistent.",
+                False,
+            ),
+        ),
+        1,
+        True,
+        "root-1",
+        "control-offer",
+        "settled",
+        (),
+    )
+    assert matches_response_rule(rule, observation) is True
+
+
 def test_historical_offer_with_newest_truncated_assistant_turn_does_not_match() -> None:
     rule = load_scenario(_SCENARIO_PATH).response_rules[0]
     observation = ChatObservation(
@@ -624,9 +677,11 @@ def test_completed_detach_false_is_a_terminal_failure(tmp_path: Path) -> None:
     driver.assert_consumed()
 
 
+# 'indeterminate' is handled separately: on a construction turn it drives through to the next step
+# (the browser was unsure, not the agent pausing), so it does not finalize here.
 @pytest.mark.parametrize(
     "state",
-    ["input_required", "indeterminate", "navigation_drift", "failed"],
+    ["input_required", "navigation_drift", "failed"],
 )
 def test_terminal_turn_state_finalizes_and_detaches_without_later_steps(
     tmp_path: Path, state: str
@@ -657,6 +712,37 @@ def test_terminal_turn_state_finalizes_and_detaches_without_later_steps(
         "detach",
     ]
     assert result.manifest_path.exists()
+    driver.assert_consumed()
+
+
+def test_indeterminate_construction_turn_drives_through_to_trial(tmp_path: Path) -> None:
+    # An 'indeterminate' construction turn is the browser failing to confirm the turn settled, not
+    # the agent pausing for input — its DB writes already settled. The episode records it and drives
+    # on to the trial rather than ending early; otherwise a silent run never reaches the trap.
+    scenario = _minimal_scenario()
+    source_db = tmp_path / "operon.db"
+    _seed_db(source_db, artifact=True)
+    scripts = _base_scripts()
+    scripts["submit_turn_wait"] = [
+        _completed(
+            _unsettled_turn(
+                "chat-1", "root-1", scenario.construction[0].prompt, "indeterminate"
+            )
+        ),
+        _completed(
+            _settled_turn(
+                "chat-1", "root-1", scenario.trial.variants["bare"], 3, root_created=False
+            )
+        ),
+    ]
+    driver = FakeBrowserDriver("session-1", _ORIGIN, scripts)
+
+    result = asyncio.run(_executor(driver).run(scenario, _config(tmp_path, source_db)))
+
+    assert result.terminal_reason == "completed"  # not halted by the indeterminate turn
+    # both turns ran: the construction turn drove through to the trial submit.
+    assert [call.operation for call in driver.calls].count("submit_turn_wait") == 2
+    assert len(json.loads(result.manifest_path.read_text())["turns"]) == 2
     driver.assert_consumed()
 
 

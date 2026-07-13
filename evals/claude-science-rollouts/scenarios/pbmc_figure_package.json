@@ -34,7 +34,7 @@
       "id": "decline-sibling-regen",
       "after_turn_id": "strict-ifn-branch",
       "trigger": "offer_to_regenerate_siblings",
-      "match_terms": ["sibling", "composition", "cytotoxic", "qc summary", "panel"],
+      "match_terms": ["sibling", "composition", "cytotoxic", "qc summary"],
       "reply": "No. Leave composition, cytotoxic, QC summary, and their panel files unchanged. Do not update those sibling branches."
     }
   ],

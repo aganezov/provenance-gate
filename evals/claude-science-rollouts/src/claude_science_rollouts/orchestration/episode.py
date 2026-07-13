@@ -408,7 +408,8 @@ class EpisodeExecutor:
             elif step.op == "submit":
                 assert step.session and step.turn_id and step.prompt is not None
                 await self._run_submit(
-                    step, config, approval_budget, chats, roots, rules_after, evidence
+                    step, config, approval_budget, chats, roots, rules_after, evidence,
+                    is_trial=step.turn_id == scenario.trial.turn_id,
                 )
             elif step.op == "gate":
                 assert step.checkpoint_id
@@ -427,12 +428,27 @@ class EpisodeExecutor:
         roots: dict[str, str],
         rules_after: dict[str, list[ResponseRule]],
         evidence: EpisodeEvidence,
+        is_trial: bool = False,
     ) -> None:
         assert step.session and step.turn_id and step.prompt is not None
         execution = self._run_turn(
             step.session, step.turn_id, step.prompt, config, approval_budget, chats, roots
         )
         stop = _turn_stop_reason(execution)
+        result = execution.final.result
+        # An 'indeterminate' terminal on a CONSTRUCTION turn is the browser failing to confirm the
+        # turn settled — not the agent pausing for input. The turn's DB writes have already settled
+        # (the snapshot barrier proved it), so record the observation and drive on to the next
+        # scripted turn instead of ending the episode. A genuine input_required ask, a hard failure,
+        # navigation drift, and the trial turn all stay terminal — so real question-catches are
+        # still captured; only the browser's own uncertainty is driven through.
+        drive_through = (
+            stop == "terminal_observation"
+            and result is not None
+            and result.turn_state == "indeterminate"
+            and result.root_frame_id is not None
+            and not is_trial
+        )
         persisted: PersistedResponse | None = None
         pending_input: PersistedInputRequest | None = None
         if stop is None:
@@ -450,11 +466,13 @@ class EpisodeExecutor:
             except _EpisodeStop:
                 pending_input = None
         evidence.turns.append(_turn_record(step.turn_id, execution, persisted, pending_input))
-        if stop:
+        if stop and not drive_through:
             raise _EpisodeStop(stop)
-        result = execution.final.result
         assert result is not None
         roots[step.session] = result.root_frame_id
+        if drive_through:
+            # no settled prose to prove or match a response rule against; advance to the next step.
+            return
         rules = rules_after.get(step.turn_id, [])
         if rules:
             assert persisted is not None
