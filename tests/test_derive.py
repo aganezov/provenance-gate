@@ -211,3 +211,30 @@ def test_derive_latest_tiebreak_is_deterministic():
         latest = {a.artifact_version_id: a.is_latest for n in g.nodes for a in n.output_surface}
         assert latest == {"vB": True, "vA": False}  # higher id wins the tie, both orders
 
+
+
+def test_derive_keeps_zero_input_output_in_producing_cell():
+    # A cell that writes without reading anything stays in its producing cell; a source is a null
+    # producing_cell_id, not an empty input set.
+    def v(vid, aid, cell, fn):
+        return {"id": vid, "artifact_id": aid, "version_number": 1, "checksum": vid,
+                "storage_path": "p/" + vid, "parent_version_id": None,
+                "producing_cell_id": cell, "frame_id": "f1" if cell else None, "filename": fn}
+    versions = {
+        "v_seed": v("v_seed", "a_seed", None, "seed.csv"),     # uploaded, no producing cell
+        "v_gen": v("v_gen", "a_gen", "c1", "generated.csv"),   # written by c1 from nothing
+        "v_read": v("v_read", "a_read", "c1", "derived.csv"),  # also c1, reads the seed
+    }
+    deps = [{"consumer_v": "v_read", "input_v": "v_seed", "reference_name": "seed.csv"}]
+    cells = {"c1": {"id": "c1", "frame_id": "f1", "cell_index": 0, "source": "gen; read seed"}}
+    frames = [{"id": "f1", "task_summary": "t", "name": None, "parent_frame_id": None}]
+    g = derive.derive_graph("p", versions, deps, cells, frames, built_at=1.0)
+
+    assert {n.id for n in g.nodes} == {"source:v_seed", "c1"}
+    c1 = next(n for n in g.nodes if n.id == "c1")
+    assert c1.kind == "computation"
+    assert {a.filename for a in c1.output_surface} == {"generated.csv", "derived.csv"}
+    assert [a.filename for a in c1.input_surface] == ["seed.csv"]
+
+    from provenance_gate.core.audit import CLEAN, audit_graph
+    assert audit_graph(g)[c1.id].level == CLEAN  # zero-input output causes no spurious verdict

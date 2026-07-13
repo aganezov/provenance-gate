@@ -100,7 +100,7 @@ def _toposort(node_ids: list[str], deps: dict[str, set[str]]) -> list[str]:
             indeg[c] -= 1
             if indeg[c] == 0:
                 q.append(c)
-    if len(order) < len(node_ids):  # a provenance DAG shouldn't cycle; stay total if it does
+    if len(order) < len(node_ids):  # cell graph should be acyclic (not guaranteed); stay total
         seen = set(order)
         order += sorted(n for n in node_ids if n not in seen)
     return order
@@ -128,14 +128,17 @@ def _cones(
       vcones[version_id] = {artifact_id: {live version ids}} in its consumed lineage: the version
         itself plus what its producing cell consumed. A cell's co-*output* siblings are excluded —
         they are co-produced peers, never inputs — so one a consumer never read can't fake a mix.
-        But ALL of a cell's inputs are attributed to EACH of its outputs on purpose: the agent could
-        reason over any consumed input to write any output, so the explicit per-file dep edges are a
-        lower bound and we keep the safe over-approximation (conservative for a trust check).
+        But ALL of a cell's inputs are attributed to EACH of its outputs on purpose. CS records
+        dependencies per output version, so this coarsens below the resolution it offers, on
+        purpose: within one agent turn a read can shape any output through shared code with no
+        recorded edge, so the per-output edges are a lower bound and we take the safe
+        over-approximation (conservative for a trust check).
       in_cones[node_id] = the merged lineage of what the node consumed (the cone its verdict reads).
     Each produced version subsumes older versions of its artifact, so a linear revision collapses.
-    Assumes a DAG — always true for immutable-artifact provenance (a version can only depend on
-    versions that already existed). A cycle (impossible in valid data) degrades to a best-effort
-    per-node verdict via the seed-as-own-source fallback, never a crash."""
+    The pass topo-sorts the cell graph (`deps`). The version graph is expected to be acyclic, but
+    its per-cell contraction can cycle if a producer id spans revisions; the gate does not validate
+    this. On a cell-graph cycle the toposort falls back to id order and seeds a missing input's cone
+    as a singleton, dropping ancestry, which can miss a mix. See docs/CELL-SUPERSET-THEOREM.md."""
     nodes = {n.id: n for n in graph.nodes}
     vcones: dict[str, dict[str, set[str]]] = {}
     in_cones: dict[str, dict[str, set[str]]] = {}
