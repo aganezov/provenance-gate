@@ -71,6 +71,11 @@ class EpisodeConfig:
     # the run continues so a post-hoc grader sees the whole rollout — while the gate-mode
     # declaration and the stop path in _evaluate_gate stay as a disabled early-stop capability.
     halt_on_checkpoint_gate: bool = False
+    # The response strategy (the decline-sibling-regen rule, its matcher, and the prose policy) is
+    # kept as a seam but NOT applied during generation: a mid-run injected reply perturbs the very
+    # behavior we are trying to observe unattended. Off by default; a future, better response
+    # strategy can opt back in without re-plumbing the scenario or the turn loop.
+    apply_response_rules: bool = False
 
     def __post_init__(self) -> None:
         if not self.episode_id or not self.project_id:
@@ -474,7 +479,7 @@ class EpisodeExecutor:
             # no settled prose to prove or match a response rule against; advance to the next step.
             return
         rules = rules_after.get(step.turn_id, [])
-        if rules:
+        if rules and config.apply_response_rules:
             assert persisted is not None
             await self._apply_response_rules(
                 rules, step.session, config, approval_budget, chats, roots, evidence, persisted

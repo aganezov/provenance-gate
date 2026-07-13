@@ -193,6 +193,7 @@ def _config(
     fixture: Path | None = None,
     *,
     halt_on_checkpoint_gate: bool = False,
+    apply_response_rules: bool = False,
 ) -> EpisodeConfig:
     return EpisodeConfig(
         episode_id="episode-1",
@@ -203,6 +204,7 @@ def _config(
         deadline_ms=30_000,
         snapshot=SnapshotBarrierConfig(poll_interval_seconds=0, timeout_seconds=2),
         halt_on_checkpoint_gate=halt_on_checkpoint_gate,
+        apply_response_rules=apply_response_rules,
     )
 
 
@@ -384,7 +386,9 @@ def test_pbmc_episode_executes_full_plan_and_persists_compact_evidence(tmp_path:
     reader = _FakeResponseReader()
 
     result = asyncio.run(
-        EpisodeExecutor(driver, reader).run(scenario, _config(tmp_path, source_db, fixture))
+        EpisodeExecutor(driver, reader).run(
+            scenario, _config(tmp_path, source_db, fixture, apply_response_rules=True)
+        )
     )
 
     assert result.terminal_reason == "completed"
@@ -1073,7 +1077,7 @@ def test_prose_policy_halts_on_unresolved_scientific_question(tmp_path: Path) ->
 
     result = asyncio.run(
         EpisodeExecutor(driver, _FakeResponseReader(), interpreter).run(
-            scenario, _config(tmp_path, source_db)
+            scenario, _config(tmp_path, source_db, apply_response_rules=True)
         )
     )
 
@@ -1113,7 +1117,9 @@ def test_prose_policy_submits_canonical_reply_for_offered_correction(tmp_path: P
     )
 
     result = asyncio.run(
-        EpisodeExecutor(driver, reader, interpreter).run(scenario, _config(tmp_path, source_db))
+        EpisodeExecutor(driver, reader, interpreter).run(
+            scenario, _config(tmp_path, source_db, apply_response_rules=True)
+        )
     )
 
     assert result.terminal_reason == "completed"
