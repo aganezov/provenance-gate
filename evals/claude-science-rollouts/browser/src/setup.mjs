@@ -1,4 +1,7 @@
-import { PAGE_OBSERVATION_HELPERS_SOURCE } from "./observations.mjs";
+import {
+  ORIGIN_FROM_HTTP_URL_SOURCE,
+  PAGE_OBSERVATION_HELPERS_SOURCE,
+} from "./observations.mjs";
 
 const HELPERS = PAGE_OBSERVATION_HELPERS_SOURCE;
 const MAX_TURN_TEXT_BYTES = 16384;
@@ -6,8 +9,7 @@ const MAX_TURN_TEXT_BYTES = 16384;
 export function buildCreateProjectSource({ origin, name }) {
   return `async (page) => {
     let mutationAttempted = false;
-    const originOf = (value) =>
-      String(value).match(/^https?:[/][/][^/?#]+/)?.[0] ?? null;
+    const originFromHttpUrl = ${ORIGIN_FROM_HTTP_URL_SOURCE};
     const fail = (code) => {
       const error = new Error(code);
       error.boundaryCode = code;
@@ -15,7 +17,7 @@ export function buildCreateProjectSource({ origin, name }) {
     };
     try {
       await page.goto(${JSON.stringify(origin)});
-      if (originOf(page.url()) !== ${JSON.stringify(origin)}) {
+      if (originFromHttpUrl(page.url()) !== ${JSON.stringify(origin)}) {
         fail("NAVIGATION_DRIFT");
       }
       const newProject = page.getByRole("button", {
@@ -75,7 +77,7 @@ export function buildCreateProjectSource({ origin, name }) {
       };
     } catch (error) {
       return {
-        _origin: originOf(page.url()),
+        _origin: originFromHttpUrl(page.url()),
         _mutation_attempted: mutationAttempted,
         _boundary_error: error?.boundaryCode ?? "MALFORMED_BROWSER_STATE",
       };
@@ -86,8 +88,7 @@ export function buildCreateProjectSource({ origin, name }) {
 export function buildNewChatSource({ origin, projectId }) {
   return `async (page) => {
     let mutationAttempted = false;
-    const originOf = (value) =>
-      String(value).match(/^https?:[/][/][^/?#]+/)?.[0] ?? null;
+    const originFromHttpUrl = ${ORIGIN_FROM_HTTP_URL_SOURCE};
     const fail = (code) => {
       const error = new Error(code);
       error.boundaryCode = code;
@@ -142,6 +143,7 @@ export function buildNewChatSource({ origin, projectId }) {
         Array.isArray(observation.turns) &&
         observation.turns.length === 0;
       if (!alreadyBlank) {
+        const implicitChatId = observation.chatId;
         const control = page.getByTestId("new-session-button");
         await control.waitFor({ state: "visible", timeout: 15000 });
         if (await control.count() !== 1) fail("MALFORMED_BROWSER_STATE");
@@ -154,7 +156,29 @@ export function buildNewChatSource({ origin, projectId }) {
               "/projects/" + ${JSON.stringify(projectId)},
           { timeout: 15000 },
         );
-        observation = await collect();
+        const explicitDeadline = Date.now() + 15000;
+        while (true) {
+          observation = await collect();
+          if (observation.locationState.origin !== ${JSON.stringify(origin)}) {
+            fail("NAVIGATION_DRIFT");
+          }
+          if (
+            observation.locationState.projectId !== ${JSON.stringify(projectId)} ||
+            observation.locationState.rootFrameId !== null ||
+            (observation.composer !== null && observation.composer.empty !== true) ||
+            (Array.isArray(observation.turns) && observation.turns.length !== 0)
+          ) fail("BLANK_CHAT_NOT_VERIFIED");
+          const explicitIdentity =
+            observation.chatId !== null &&
+            (implicitChatId === null || observation.chatId !== implicitChatId);
+          const blankHydrated =
+            observation.composer?.empty === true &&
+            Array.isArray(observation.turns) &&
+            observation.turns.length === 0;
+          if (explicitIdentity && blankHydrated) break;
+          if (Date.now() >= explicitDeadline) fail("BLANK_CHAT_NOT_VERIFIED");
+          await page.waitForTimeout(100);
+        }
       }
       verifyBlank(observation);
       return {
@@ -174,7 +198,7 @@ export function buildNewChatSource({ origin, projectId }) {
       };
     } catch (error) {
       return {
-        _origin: originOf(page.url()),
+        _origin: originFromHttpUrl(page.url()),
         _mutation_attempted: mutationAttempted,
         _boundary_error: error?.boundaryCode ?? "MALFORMED_BROWSER_STATE",
       };
@@ -182,50 +206,69 @@ export function buildNewChatSource({ origin, projectId }) {
   }`;
 }
 
-export function buildOpenAttachmentChooserSource({ origin, projectId, chatId }) {
+export function buildSetAttachmentSource({
+  origin,
+  projectId,
+  chatId,
+  sourcePath,
+}) {
   return `async (page) => {
-    const originOf = (value) =>
-      String(value).match(/^https?:[/][/][^/?#]+/)?.[0] ?? null;
+    const originFromHttpUrl = ${ORIGIN_FROM_HTTP_URL_SOURCE};
     const fail = (code) => {
       const error = new Error(code);
       error.boundaryCode = code;
       throw error;
     };
+    let stage = "draft";
+    let mutationAttempted = false;
     try {
-      const identity = await page.evaluate(() => {
-        const { activeChatId, composerState, parseLocation } = (${HELPERS})();
-        return {
-          ...parseLocation(),
-          chatId: activeChatId(),
-          composer: composerState(),
-        };
-      });
-      if (identity.origin !== ${JSON.stringify(origin)}) fail("NAVIGATION_DRIFT");
-      if (
-        identity.projectId !== ${JSON.stringify(projectId)} ||
-        identity.chatId !== ${JSON.stringify(chatId)} ||
-        identity.rootFrameId !== null ||
-        identity.composer?.empty !== true
-      ) fail("IDENTITY_MISMATCH");
-      const add = page.getByRole("button", {
-        name: "Add to message",
-        exact: true,
-      });
-      await add.waitFor({ state: "visible", timeout: 15000 });
-      if (await add.count() !== 1) fail("MALFORMED_BROWSER_STATE");
-      await add.click();
-      const attach = page.getByRole("menuitem", {
-        name: "Attach files",
-        exact: true,
-      });
-      await attach.waitFor({ state: "visible", timeout: 15000 });
-      if (await attach.count() !== 1) fail("MALFORMED_BROWSER_STATE");
-      await attach.click();
-      return { _origin: identity.origin, result: { ready: true } };
-    } catch (error) {
+      const readinessDeadline = Date.now() + 15000;
+      let identity;
+      while (true) {
+        identity = await page.evaluate(() => {
+          const { activeChatId, composerState, parseLocation, transcript } = (${HELPERS})();
+          return {
+            ...parseLocation(),
+            chatId: activeChatId(),
+            composer: composerState(),
+            turns: transcript(${MAX_TURN_TEXT_BYTES}),
+          };
+        });
+        if (identity.origin !== ${JSON.stringify(origin)}) fail("NAVIGATION_DRIFT");
+        if (
+          identity.projectId !== ${JSON.stringify(projectId)} ||
+          identity.rootFrameId !== null ||
+          (identity.composer !== null && identity.composer.empty !== true) ||
+          (Array.isArray(identity.turns) && identity.turns.length !== 0)
+        ) fail("IDENTITY_MISMATCH");
+        if (
+          identity.chatId === ${JSON.stringify(chatId)} &&
+          identity.composer?.empty === true &&
+          Array.isArray(identity.turns) &&
+          identity.turns.length === 0
+        ) break;
+        if (Date.now() >= readinessDeadline) fail("ATTACHMENT_DRAFT_NOT_READY");
+        await page.waitForTimeout(100);
+      }
+      stage = "file_input";
+      const input = page.locator('input[type="file"]');
+      if (await input.count() !== 1) fail("ATTACHMENT_INPUT_UNAVAILABLE");
+      mutationAttempted = true;
+      await input.setInputFiles(${JSON.stringify(sourcePath)});
       return {
-        _origin: originOf(page.url()),
-        _boundary_error: error?.boundaryCode ?? "MALFORMED_BROWSER_STATE",
+        _origin: identity.origin,
+        _mutation_attempted: true,
+        result: { ready: true, chat_id: identity.chatId },
+      };
+    } catch (error) {
+      const stageCode = {
+        draft: "ATTACHMENT_DRAFT_NOT_READY",
+        file_input: "ATTACHMENT_INPUT_UNAVAILABLE",
+      }[stage];
+      return {
+        _origin: originFromHttpUrl(page.url()),
+        _mutation_attempted: mutationAttempted,
+        _boundary_error: error?.boundaryCode ?? stageCode,
       };
     }
   }`;
@@ -233,8 +276,7 @@ export function buildOpenAttachmentChooserSource({ origin, projectId, chatId }) 
 
 export function buildVerifyAttachmentSource({ origin, projectId, chatId, filename }) {
   return `async (page) => {
-    const originOf = (value) =>
-      String(value).match(/^https?:[/][/][^/?#]+/)?.[0] ?? null;
+    const originFromHttpUrl = ${ORIGIN_FROM_HTTP_URL_SOURCE};
     const fail = (code) => {
       const error = new Error(code);
       error.boundaryCode = code;
@@ -284,7 +326,7 @@ export function buildVerifyAttachmentSource({ origin, projectId, chatId, filenam
       };
     } catch (error) {
       return {
-        _origin: originOf(page.url()),
+        _origin: originFromHttpUrl(page.url()),
         _boundary_error: error?.boundaryCode ?? "MALFORMED_BROWSER_STATE",
       };
     }

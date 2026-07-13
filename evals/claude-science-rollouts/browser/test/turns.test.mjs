@@ -6,8 +6,10 @@ import {
   buildSubmitTurnSource,
   buildResolveApprovalSource,
   buildWaitTurnSource,
+  composerInsertionText,
   deliveryTextSha256,
   normalizeVisibleText,
+  originFromHttpUrl,
   sha256Hex,
 } from "../src/turns.mjs";
 
@@ -85,7 +87,7 @@ test("submit source contains one send and wait source cannot submit", () => {
   assert.doesNotThrow(() => new Function(`return (${approval})`));
   assert.equal(approval.match(/await control\.click\(\)/g)?.length, 1);
   assert.match(approval, /approval-card/);
-  assert.match(approval, /Allow\\s\+for this conversation/);
+  assert.match(approval, /Allow\(\?:\\s\+for chat\)\?\\s\+for this conversation/);
   assert.match(approval, /Deny/);
 });
 
@@ -109,6 +111,157 @@ test("submit insertion guard accepts a contenteditable composer, not only role=t
   assert.match(submit, /\[contenteditable="true"\]/);
   // ...and the insertion guard must accept it too, not only role=textbox.
   assert.match(submit, /isContentEditable/);
+});
+
+test("composer insertion preserves a visible separator across line boundaries", () => {
+  const prompt = "first line\nsecond line\r\nthird line";
+  const insertion = composerInsertionText(prompt);
+  assert.equal(insertion, "first line second line third line");
+  assert.equal(deliveryTextSha256(insertion), deliveryTextSha256(prompt));
+
+  const submit = buildSubmitTurnSource({
+    origin: "http://127.0.0.1:8875",
+    projectId: "project-001",
+    chatId: "chat-001",
+    rootMode: "new",
+    rootFrameId: null,
+    prompt,
+    authoredPromptSha256: sha256Hex(prompt),
+    expectedDeliverySha256: deliveryTextSha256(prompt),
+    deadlineMs: 15000,
+  });
+  assert.match(submit, /first line second line third line/);
+  assert.doesNotMatch(submit, /first line\\nsecond line/);
+});
+
+test("generated catch paths derive origin without VM URL globals", () => {
+  assert.equal(
+    originFromHttpUrl("http://localhost:8875/projects/project-001"),
+    "http://localhost:8875",
+  );
+  assert.equal(
+    originFromHttpUrl("https://[::1]:8875/projects/project-001"),
+    "https://[::1]:8875",
+  );
+  const submit = buildSubmitTurnSource({
+    origin: "http://localhost:8875",
+    projectId: "project-001",
+    chatId: "chat-001",
+    rootMode: "new",
+    rootFrameId: null,
+    prompt: "Do one thing",
+    authoredPromptSha256: "a".repeat(64),
+    expectedDeliverySha256: "b".repeat(64),
+    deadlineMs: 15000,
+  });
+  assert.doesNotMatch(submit, /new URL\(page\.url\(\)\)/);
+  assert.match(submit, /originFromHttpUrl\(page\.url\(\)\)/);
+});
+
+test("one submit callback crosses root navigation and returns approval to the caller", async () => {
+  const origin = "http://localhost:8875";
+  const projectId = "project-001";
+  const chatId = "chat-001";
+  const rootId = "root-001";
+  const prompt = "first line\nsecond line";
+  const visiblePrompt = composerInsertionText(prompt);
+  const card = {
+    card_id: "approval:abc:0",
+    fingerprint: "c".repeat(64),
+    title: "Run code?",
+    kind: "approval",
+  };
+  const source = buildSubmitTurnSource({
+    origin,
+    projectId,
+    chatId,
+    rootMode: "new",
+    rootFrameId: null,
+    prompt,
+    authoredPromptSha256: sha256Hex(prompt),
+    expectedDeliverySha256: deliveryTextSha256(prompt),
+    deadlineMs: 15000,
+  });
+  let observationIndex = -1;
+  let submitted = false;
+  let sendCount = 0;
+  const page = {
+    url: () => submitted
+      ? `${origin}/projects/${projectId}/frames/${rootId}`
+      : `${origin}/projects/${projectId}`,
+    async evaluate(fn, argument) {
+      const body = fn.toString();
+      if (body.startsWith("async (text)")) return sha256Hex(argument);
+      if (body.startsWith("(text)")) return true;
+      if (body.includes("return parseLocation();")) {
+        observationIndex += 1;
+        return {
+          origin,
+          projectId,
+          rootFrameId: observationIndex === 0 ? null : rootId,
+        };
+      }
+      if (body.includes("return activeChatId();")) {
+        return observationIndex === 1 ? null : chatId;
+      }
+      if (body.includes("return composerState();")) {
+        return { empty: !submitted, visible: true };
+      }
+      if (body.includes("return transcript(maximumTextBytes);")) {
+        if (observationIndex === 1 || observationIndex >= 3) return null;
+        return observationIndex === 0
+          ? []
+          : [{
+              index: 0,
+              turn_id: "user-001",
+              role: "user",
+              text: visiblePrompt,
+              truncated: false,
+            }];
+      }
+      if (body.includes("return approvalCards();")) {
+        return observationIndex >= 4 ? [card] : [];
+      }
+      if (body.includes("return turnStateSignals();")) {
+        return { busy: true, failed: false, inputRequired: false };
+      }
+      if (body.includes("return rootFrameModel(rootFrameId);")) {
+        return observationIndex === 1 ? null : { project_id: projectId };
+      }
+      assert.fail(`Unexpected page.evaluate callback: ${body.slice(0, 80)}`);
+    },
+    locator() {
+      return {
+        count: async () => 1,
+        isVisible: async () => true,
+        click: async () => {},
+      };
+    },
+    getByRole(role, options) {
+      assert.equal(role, "button");
+      assert.equal(options.name, "Send");
+      return {
+        waitFor: async () => {},
+        count: async () => 1,
+        async click() {
+          sendCount += 1;
+          submitted = true;
+        },
+      };
+    },
+    async waitForTimeout() {},
+  };
+  const run = new Function(`return (${source})`)();
+
+  const wrapper = await run(page);
+
+  assert.equal(sendCount, 1);
+  assert.equal(wrapper._mutation_attempted, true);
+  assert.equal(wrapper.result.root_frame_id, rootId);
+  assert.equal(wrapper.result.root_created, true);
+  assert.equal(wrapper.result.turn_state, "approval_required");
+  assert.deepEqual(wrapper.result.approval.cards, [card]);
+  assert.equal(wrapper.result.continuation.normalized_user_turn_id, "user-001");
 });
 
 test("resumed polling rejects a later user turn before settlement", async () => {

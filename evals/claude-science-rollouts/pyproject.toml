@@ -12,6 +12,10 @@ requires-python = ">=3.11"
 dependencies = []  # control plane is near-stdlib (subprocess to the Node browser boundary); grows as
                    # the harness lands, but never with the Python `playwright` package or `provenance-gate`.
 
+# The generation entry point: one CLI that runs a single live rollout and captures its evidence.
+[project.scripts]
+cs-rollout = "claude_science_rollouts.run_episode:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8",

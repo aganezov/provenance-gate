@@ -147,6 +147,72 @@ test("session lifecycle payloads are empty and detach results are exact", () => 
   );
 });
 
+test("model selection payload and confirmation are exact and correlated", () => {
+  const parsed = parseRequestText(
+    JSON.stringify(
+      request({
+        operation: "model.select",
+        payload: {
+          project_id: "project-001",
+          chat_id: "chat-001",
+          model_label: "Research Fast",
+        },
+      }),
+    ),
+  );
+  const response = completedResponse(
+    parsed,
+    {
+      project_id: "project-001",
+      chat_id: "chat-001",
+      model_label: "Research Fast",
+      previous_model_label: "Research Fast",
+      changed: false,
+      confirmed: true,
+    },
+    12,
+  );
+  assert.equal(response.result.changed, false);
+  assert.throws(
+    () =>
+      parseRequestText(
+        JSON.stringify(
+          request({
+            operation: "model.select",
+            payload: {
+              project_id: "project-001",
+              chat_id: "chat-001",
+              model_label: " leading",
+            },
+          }),
+        ),
+      ),
+    (error) => error instanceof BoundaryError && error.code === "INVALID_TEXT",
+  );
+  assert.throws(
+    () => parseRequestText(JSON.stringify(request({
+      operation: "model.select",
+      payload: {
+        project_id: "project-001",
+        chat_id: "chat-001",
+        model_label: "Research\nFast",
+      },
+    }))),
+    (error) => error instanceof BoundaryError && error.code === "INVALID_TEXT",
+  );
+  assert.throws(
+    () => completedResponse(parsed, {
+      project_id: "project-001",
+      chat_id: "chat-001",
+      model_label: "Research Fast",
+      previous_model_label: "Research Fast",
+      changed: true,
+      confirmed: true,
+    }, 12),
+    (error) => error instanceof BoundaryError && error.code === "INVALID_RESPONSE",
+  );
+});
+
 test("G3a request payloads are exact and identity typed", () => {
   for (const operation of ["project.inspect", "agent_context.inspect"]) {
     const parsed = parseRequestText(JSON.stringify(request({

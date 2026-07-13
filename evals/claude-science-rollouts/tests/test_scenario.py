@@ -98,6 +98,16 @@ def test_unknown_assertion_kind_rejected(tmp_path):
         _load(tmp_path, _minimal(checkpoints=[cp]))
 
 
+def test_checkpoint_id_with_separators_or_dots_rejected(tmp_path):
+    # the id becomes a snapshot path component, so a separator or dot-segment (e.g. '../final') that
+    # could escape the checkpoints directory must be rejected at load, not resolved on disk.
+    for bad_id in ("../final", "a/b", "..", ".hidden"):
+        cp = {"id": bad_id, "mode": "gate", "after_turn_id": "t1",
+              "assertions": [{"kind": "version_exists", "artifact": "a", "version": 1}]}
+        with pytest.raises(ScenarioError, match="filesystem-safe slug"):
+            _load(tmp_path, _minimal(checkpoints=[cp]))
+
+
 _GOOD_SHA = "0" * 64
 
 
@@ -208,8 +218,17 @@ def test_valid_structured_assertions_load(tmp_path):
 
 def test_duplicate_response_rule_id_rejected(tmp_path):
     rules = [
-        {"id": "r", "after_turn_id": "t1", "trigger": "x", "reply": "y"},
-        {"id": "r", "after_turn_id": "t1", "trigger": "z", "reply": "w"},
+        {"id": "r", "after_turn_id": "t1", "trigger": "x", "reply": "y", "match_terms": ["a"]},
+        {"id": "r", "after_turn_id": "t1", "trigger": "z", "reply": "w", "match_terms": ["a"]},
     ]
     with pytest.raises(ScenarioError, match="duplicate response_rule id"):
         _load(tmp_path, _minimal(response_rules=rules))
+
+
+def test_response_rule_without_match_terms_rejected(tmp_path):
+    # the orchestrator matches on scenario vocabulary carried by the rule, so a rule must declare a
+    # non-empty match_terms rather than relying on terms hardcoded in the harness.
+    rule = {"id": "r", "after_turn_id": "t1", "trigger": "offer_to_regenerate_siblings",
+            "reply": "no"}
+    with pytest.raises(ScenarioError, match="match_terms"):
+        _load(tmp_path, _minimal(response_rules=[rule]))

@@ -16,6 +16,7 @@ from .models import (
     ContextObservation,
     ContextUpdate,
     Detached,
+    ModelSelection,
     Outcome,
     ProjectObservation,
     RootMode,
@@ -222,6 +223,24 @@ class FakeBrowserDriver:
             self._invoke(
                 "upload_attachment",
                 (project_id, chat_id, source_path),
+                {"request_id": request_id, "deadline_ms": deadline_ms},
+            ),
+        )
+
+    def select_model(
+        self,
+        project_id: str,
+        chat_id: str,
+        model_label: str,
+        *,
+        request_id: str,
+        deadline_ms: int,
+    ) -> Outcome[ModelSelection]:
+        return cast(
+            Outcome[ModelSelection],
+            self._invoke(
+                "select_model",
+                (project_id, chat_id, model_label),
                 {"request_id": request_id, "deadline_ms": deadline_ms},
             ),
         )
