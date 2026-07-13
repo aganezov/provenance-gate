@@ -12,20 +12,23 @@ import argparse
 import json
 
 from ...core.audit import audit_graph, flagged_verdicts
+from ...core.review_kit import _name
 from . import substrate
 
 
 def _cell_labels(graph) -> dict:
     # name a cell by the artifacts it produces (falling back to its own label), so the report reads
-    # in the reviewer's terms — "figure_final.png" rather than an opaque cell id.
+    # in the reviewer's terms — "figure_final.png" rather than an opaque cell id. _name is the same
+    # NULL-safe helper the review kit uses: CS keeps NULL-filename versions, and a bare None would
+    # break the join — so both label builders share one fallback format.
     return {
-        node.id: ", ".join(ref.filename for ref in node.output_surface) or node.label
+        node.id: ", ".join(_name(ref) for ref in node.output_surface) or node.label
         for node in graph.nodes
     }
 
 
 def _issue_line(issue: dict) -> str:
-    used = "/".join(f"v{n}" for n in issue["versions"])
+    used = "/".join(f"v{n}" for n in issue["versions"]) or "unversioned"
     current = f"current v{issue['current']}" if issue["current"] is not None else "no current head"
     return f"{issue['artifact']} ({used}; {current})"
 
@@ -34,11 +37,12 @@ def audit_db(db_path: str, project_id: str | None = None) -> dict:
     """Derive and audit one project in ``db_path``; return a JSON-safe report of the flagged cells.
 
     ``project_id`` defaults to the only project in the db (a captured snapshot holds exactly one).
+    Raises ``ValueError`` if the db holds no project, so library callers can catch it.
     """
     reader = substrate.CsDbReader(db_path)
     projects = reader.list_projects()
     if not projects:
-        raise SystemExit(f"pg-audit: no project found in {db_path}")
+        raise ValueError(f"pg-audit: no project found in {db_path}")
     pid = project_id or projects[0]["id"]
     graph = reader.read_project_graph(pid)
     flags = flagged_verdicts(audit_graph(graph), _cell_labels(graph))
@@ -66,7 +70,10 @@ def main() -> None:
     ap.add_argument("--json", action="store_true", help="emit the report as JSON")
     args = ap.parse_args()
 
-    report = audit_db(args.db, args.project)
+    try:
+        report = audit_db(args.db, args.project)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     if args.json:
         print(json.dumps(report, indent=2))
     else:
