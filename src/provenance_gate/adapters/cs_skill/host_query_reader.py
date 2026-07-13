@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from ...core.derive import derive_graph, empty_graph
-from ...core.model import Graph
+from ...core.model import SELF_ARTIFACTS, Graph
 from ...core.walk import closure
 
 
@@ -42,12 +42,6 @@ def _in(ids) -> str:
     ``_chunked``, so this is defensive."""
     ids = tuple(ids)
     return ",".join("'" + _esc(i) + "'" for i in ids) if ids else "NULL"
-
-
-# The skill's OWN render outputs (render_cockpit writes + save_artifacts these). Excluded from every
-# graph so the cockpit shows the user's science, not its own plumbing. Kept in sync with what
-# render_cockpit saves by a drift test (test_render_outputs_are_all_excluded).
-SELF_ARTIFACTS = ("cockpit.html", "cytoscape-dagre.bundle.min.js", "cockpit-app.js")
 
 
 class HostQueryReader:
