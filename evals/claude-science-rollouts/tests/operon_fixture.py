@@ -1,4 +1,4 @@
-"""Shared synthetic operon fixtures — one source of truth for oracle and checkpoint tests.
+"""Shared synthetic operon fixtures — one source of truth for capture and checkpoint tests.
 
 Hand-built rows mirroring the operon subset the harness reads (projects, artifacts,
 artifact_versions, artifact_dependencies). Deterministic; no external database.
@@ -7,9 +7,8 @@ artifact_versions, artifact_dependencies). Deterministic; no external database.
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
-
-from claude_science_rollouts.oracle import audit_project
 
 SCHEMA = """
 CREATE TABLE projects(id TEXT PRIMARY KEY, name TEXT);
@@ -21,6 +20,21 @@ CREATE TABLE artifact_versions(
 CREATE TABLE artifact_dependencies(
     id TEXT PRIMARY KEY, artifact_version_id TEXT, depends_on_version_id TEXT, reference_name TEXT);
 """
+
+# The transcript half of the operon that the harness reads back for prose and approvals. Kept apart
+# from SCHEMA so existing artifact-only fixtures stay unchanged; a root frame points at itself and
+# each message row carries the same JSON the app persists.
+FRAME_SCHEMA = """
+CREATE TABLE frames(
+    id TEXT PRIMARY KEY, root_frame_id TEXT, project_id TEXT, status TEXT, model TEXT);
+CREATE TABLE frame_messages(
+    frame_id TEXT, idx INTEGER, msg_json TEXT, msg_uuid TEXT, PRIMARY KEY(frame_id, idx));
+"""
+
+
+def frame_message(role: str, message_id: str, content: list[dict[str, object]]) -> str:
+    """Encode one operon frame message: role, content blocks, and the message's embedded uuid."""
+    return json.dumps({"role": role, "content": content, "_uuid": message_id})
 
 
 class Operon:
@@ -68,9 +82,6 @@ class Operon:
                 (f"d_{self._seq}", vid, input_vid, None),
             )
         return vid
-
-    def verdict(self):
-        return audit_project(self.conn, self.pid)
 
 
 def diamond(op: Operon) -> tuple[str, str, str]:

@@ -1,12 +1,13 @@
 # claude-science-rollouts
 
-A browser-driven evaluation harness that measures the [provenance gate](../../README.md)'s thesis with
-controlled, automated Claude Science rollouts.
+A browser-driven harness that generates controlled, automated Claude Science rollouts and captures
+their provenance evidence for the [provenance gate](../../README.md).
 
 Each episode runs a Claude Science scenario under a condition (e.g. baseline vs. a provenance
-Agent-Context), captures the agent's behavior, the built-in reviewer's verdicts, and the project's
-provenance lineage, and scores — deterministically — whether the agent and reviewer catch a
-version-inconsistency that the deterministic gate catches.
+Agent-Context) and freezes what the rollout produced — the agent's behavior, the built-in reviewer's
+verdicts, and the project's provenance lineage — into an immutable, content-hashed snapshot. That
+snapshot is the deliverable: a rollout that can be scored after the fact, re-scored, and compared
+byte-for-byte without ever going back to a live Claude Science.
 
 ## Architecture
 
@@ -21,13 +22,13 @@ Python harness
 ```
 
 - **Python owns** scenario compilation, episode/replicate orchestration, browser-lease policy,
-  conditions, approval/simulated-human policy, the read-only Operon SQL oracle, timeout recovery,
-  checkpoints, evidence manifests, and scoring/aggregation.
+  conditions, approval/simulated-human policy, read-only Operon reads (project snapshots and the
+  dependency-closure walk), timeout recovery, checkpoints, and evidence manifests.
 - **JavaScript owns** only the browser boundary — a small set of Playwright-CLI primitives, in the
   `browser/` subpackage.
 
 ## Independence
 
-The harness's structural ground truth is its **own** raw-SQL closure walk over the operon DB — it does
-not import the gate, so the evaluation never judges the gate with the gate's own code. The reads are
-strictly read-only. Python and JavaScript test suites run separately.
+The harness reads Claude Science strictly read-only, through its **own** raw-SQL closure walk over the
+operon DB — it never imports the gate, so nothing here leans on the gate's own code. Python and
+JavaScript test suites run separately.

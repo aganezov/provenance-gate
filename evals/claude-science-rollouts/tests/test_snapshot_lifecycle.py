@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -90,6 +91,44 @@ def test_default_observer_stabilizes_real_project_rows(tmp_path: Path) -> None:
     assert result.attempts == 2
     assert result.observation.project == ("project-1", "test")
     assert result.path.exists()
+
+
+@dataclass(frozen=True)
+class _ReadyObservation:
+    ready: bool
+    value: str
+
+
+def test_barrier_does_not_settle_on_a_stable_not_ready_observation(tmp_path: Path) -> None:
+    # two equal not-ready observations must not be promoted to stable; the barrier waits for a ready
+    # observation that repeats, rather than settling on a still-writing turn.
+    source = tmp_path / "live.db"
+    run_dir = tmp_path / "run"
+    _seed_database(source)
+    observations = iter(
+        (
+            _ReadyObservation(False, "pending"),
+            _ReadyObservation(False, "pending"),
+            _ReadyObservation(True, "done"),
+            _ReadyObservation(True, "done"),
+        )
+    )
+
+    async def no_wait(_delay: float) -> None:
+        return None
+
+    result = asyncio.run(
+        await_stable_project_snapshot(
+            source,
+            "project-1",
+            run_dir,
+            observer=lambda _conn, _project_id: next(observations),
+            sleep=no_wait,
+        )
+    )
+
+    assert result.attempts == 4
+    assert result.observation == _ReadyObservation(True, "done")
 
 
 class _Clock:

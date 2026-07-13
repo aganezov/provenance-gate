@@ -22,6 +22,12 @@ def file_sha256(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def canonical_json(value: object) -> str:
+    """Deterministic JSON — sorted keys, no whitespace, raw UTF-8. One convention for every
+    fingerprint and on-disk record, so identical values always serialize to identical bytes."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
 @dataclass(slots=True)
 class EpisodeEvidence:
     scenario_id: str
@@ -73,7 +79,7 @@ class EpisodeEvidence:
         target = directory / "episode_manifest.json"
         if target.is_symlink():
             raise ValueError("episode manifest cannot be a symlink")
-        payload = json.dumps(self.as_dict(), sort_keys=True, separators=(",", ":"))
+        payload = canonical_json(self.as_dict())
         temporary = directory / ".episode_manifest.json.tmp"
         if temporary.is_symlink():
             raise ValueError("temporary episode manifest cannot be a symlink")
