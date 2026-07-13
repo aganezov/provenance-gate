@@ -56,7 +56,9 @@ the evidence under `--run-root`.
 `run_summary.json` records episode and model identity, the baseline hashes, the manifest and snapshot
 sha256s, each checkpoint's result, the database-derived final prose or input request, and the detach
 outcome. Every `project.db` is a project-scoped operon — audit one directly with
-`uv run pg-audit <snapshot>`.
+`uv run pg-audit <snapshot>`. A committed capture is in
+[`examples/pbmc-version-mix/`](examples/pbmc-version-mix/): a rollout whose shipped package the gate
+flags `version_mix`, auditable straight from the db.
 
 ## Failure semantics
 
