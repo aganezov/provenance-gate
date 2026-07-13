@@ -325,6 +325,7 @@ def _validate_run_parameters(args: argparse.Namespace) -> None:
     """Reject malformed run parameters before any browser or database work begins."""
     _validate_bounded_text(args.model_label, "model label")
     _validate_bounded_text(args.expected_model_identifier, "expected model identifier")
+    _validate_bounded_text(args.browser_owner, "browser owner")
     if args.expected_skill_count < 0:
         raise RunFailure("expected skill count cannot be negative")
     for name in ("expected_skill_hash", "expected_context_hash"):

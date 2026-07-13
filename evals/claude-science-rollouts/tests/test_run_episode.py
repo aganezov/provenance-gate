@@ -49,6 +49,7 @@ def _params(**overrides: object) -> argparse.Namespace:
     base: dict[str, object] = {
         "model_label": "Claude Opus 4.5",
         "expected_model_identifier": "claude-opus-4-5",
+        "browser_owner": "cs-harness",
         "expected_skill_count": 16,
         "expected_skill_hash": "a" * 64,
         "expected_context_hash": "b" * 64,
@@ -136,6 +137,7 @@ def test_validate_run_parameters_accepts_valid() -> None:
         {"model_label": "with\tcontrol"},
         {"expected_model_identifier": ""},
         {"expected_model_identifier": "trailing "},
+        {"browser_owner": "bad\nowner"},
         {"expected_skill_count": -1},
         {"expected_skill_hash": "a" * 63},
         {"expected_skill_hash": "g" * 64},

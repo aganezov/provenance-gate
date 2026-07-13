@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -109,8 +110,8 @@ def _prompt_sha256(prompt: str) -> str:
 
 
 def _outcome_reason(prefix: str, outcome: Outcome[Any]) -> str:
-    if outcome.outcome == "completed":
-        return f"{prefix}_invalid_result"
+    # only reached for a non-completed outcome (the caller handles completed), so the state here is
+    # "not_started" or "unknown_outcome".
     return f"{prefix}_{outcome.outcome}"
 
 
@@ -222,8 +223,16 @@ def _turn_record(
     }
 
 
+_SAFE_PATH_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
 def _reduced_snapshot_path(run_dir: Path, *parts: str) -> Path:
-    """A destination under ``run_dir/snapshots`` that no symlink can redirect outside the run."""
+    """A destination under ``run_dir/snapshots`` that no symlink can redirect outside the run. Every
+    segment must be a filesystem-safe slug — no separators, no dot-segments — checked before any
+    directory is created, so a stray label can't mkdir or escape outside the snapshots tree."""
+    for part in parts:
+        if not _SAFE_PATH_SEGMENT.fullmatch(part):
+            raise ValueError(f"snapshot path segment is not a safe slug: {part!r}")
     run_root = run_dir.resolve()
     current = run_dir / "snapshots"
     for part in parts[:-1]:

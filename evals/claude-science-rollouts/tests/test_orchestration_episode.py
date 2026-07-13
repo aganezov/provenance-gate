@@ -14,6 +14,7 @@ import pytest
 from claude_science_rollouts.orchestration.episode import (
     EpisodeConfig,
     EpisodeExecutor,
+    _reduced_snapshot_path,
     approval_policy_for_scenario,
     matches_response_rule,
 )
@@ -1078,3 +1079,14 @@ def test_boundary_error_is_folded_into_step_evidence(tmp_path: Path) -> None:
         "evidence": {"phase": "new_chat"},
     }
     driver.assert_consumed()
+
+
+def test_reduced_snapshot_path_rejects_unsafe_segments(tmp_path: Path) -> None:
+    # a checkpoint label reaches this builder as a path segment, so a separator or dot-segment must
+    # be rejected before any directory is created — not caught only by the final containment check.
+    for unsafe in ("../final", "a/b", "..", ".hidden"):
+        with pytest.raises(ValueError, match="safe slug"):
+            _reduced_snapshot_path(tmp_path, "checkpoints", unsafe, "project.db")
+    # the real segments (including the dotted filename) are accepted.
+    ok = _reduced_snapshot_path(tmp_path, "checkpoints", "baseline-qc", "project.db")
+    assert ok == tmp_path / "snapshots" / "checkpoints" / "baseline-qc" / "project.db"
