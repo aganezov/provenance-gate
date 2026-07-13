@@ -13,7 +13,7 @@ That is deliberate. A computed verdict doesn't depend on a model reading its own
 It is not a correctness checker, not a faithfulness checker (content vs. hash), not a linter, and not
 an agent. It says nothing about whether an analysis is right, only whether it was built on current,
 consistent inputs. How often it catches a problem a reviewer would otherwise have missed, and how
-often that turns out to matter, is an empirical question we haven't measured (§5).
+often that turns out to matter, is an empirical question we have only begun to probe (§5).
 
 ### Scope: the deterministic slice of a larger design
 
@@ -181,14 +181,24 @@ a person in the loop is that the cockpit page can't call the skill (see [HEADROO
   once as artifacts and referenced by marker, so a render is a few KB rather than ~770 KB.
 - The hand-off is copy-paste; the page can't call back (D5).
 - No faithfulness check yet.
+- The flag is deterministic and, today, un-suppressible. A scientist who inspects a real `version_mix`
+  and judges it harmless for their conclusion — messy, legitimate science, where regenerating everything
+  isn't worth it — has nowhere to record that, so the flag re-surfaces every run. That is partly by
+  design: whether a structural conflict is *safe to present* is a human call, not the gate's. The
+  intended resolution is the human-owned attestation layer — a per-conflict "reviewed, fine" bound to the
+  exact versions in the conflict. Because it is version-stamped it clears the flag now yet re-surfaces if
+  the lineage later changes, so an attestation can't silently mask a conflict a revision reintroduces. It
+  waits on the writable overlay store (§3).
 - The conservative input rule over-flags downstream of a cell that read two divergent versions of one
   artifact (D3). That's the safe direction, and the cell itself is flagged too.
 - Cycle handling is best-effort and order-dependent. A version cycle can't occur in valid data (A1); a
   producer-cell cycle can (A6) — it is not schema-guaranteed — and can make the audit silently
   under-detect a mix (a false clean). Validating this and failing closed is required hardening the gate
   does not yet enforce (A6; [CELL-SUPERSET-THEOREM.md](CELL-SUPERSET-THEOREM.md) §5–§6).
-- No effectiveness numbers. How often it catches something a reviewer would have missed, and how often
-  that matters, is for the eval harness.
+- A first, single-scenario measurement — not broad effectiveness numbers. One PBMC scenario over 24
+  unattended rollouts shows the failure occurs and usually goes unstated in the prose
+  ([PBMC-ROLLOUT-RESULTS.md](PBMC-ROLLOUT-RESULTS.md)); how often the gate catches what a reviewer
+  would otherwise miss, across scenarios, is still for broader runs.
 
 ## 6. Validation
 

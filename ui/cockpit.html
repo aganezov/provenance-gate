@@ -6034,9 +6034,7 @@ function copyReviewPrompt(mode){
     ? 'review_subgraph(' + JSON.stringify(seeds) + ', scope="upstream")'
     : 'review_selection(' + JSON.stringify(seeds) + ')';
   const p =
-    "Use the provenance-gate DRAFT skill (draft skills don't auto-load). In the control-plane/repl kernel:\n"
-    + "  src = host.skills.read('provenance-gate','kernel.py')['content']; exec(src, globals())\n"
-    + "Then call:\n"
+    'Using the provenance-gate skill, run:\n'
     + '  ' + call + '\n'
     + 'and assess whether these results rest on coherent, current inputs; flag any silent version conflict or stale dependency.\n'
     + '# selected: ' + names.join(', ');
