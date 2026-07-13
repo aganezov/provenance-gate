@@ -112,6 +112,16 @@ class AttachmentAccepted:
 
 
 @dataclass(frozen=True)
+class ModelSelection:
+    project_id: str
+    chat_id: str
+    model_label: str
+    previous_model_label: str
+    changed: bool
+    confirmed: bool
+
+
+@dataclass(frozen=True)
 class DeliveryProof:
     root_frame_id: str
     authored_prompt_sha256: str
