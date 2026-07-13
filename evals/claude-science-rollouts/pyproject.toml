@@ -1,12 +1,12 @@
 # The eval-harness workspace member — the Python CONTROL PLANE. Python owns scenario compilation,
-# orchestration, the read-only Operon SQL oracle, scoring, and policy; the BROWSER boundary is a Node
-# @playwright/cli subpackage (browser/) driven via subprocess + versioned JSON, NOT the Python
-# playwright package. This member does NOT import provenance-gate, and the gate never gains a dep from
-# here — that's the workspace firewall the root pyproject relies on.
+# orchestration, read-only Operon reads (project snapshots + the dependency-closure walk), and policy;
+# the BROWSER boundary is a Node @playwright/cli subpackage (browser/) driven via subprocess +
+# versioned JSON, NOT the Python playwright package. This member does NOT import provenance-gate, and
+# the gate never gains a dep from here — that's the workspace firewall the root pyproject relies on.
 [project]
 name = "claude-science-rollouts"
 version = "0.0.1"
-description = "Browser-driven eval harness measuring the provenance gate's thesis via controlled Claude Science rollouts."
+description = "Harness that generates controlled Claude Science rollouts and captures their provenance evidence for the provenance gate."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []  # control plane is near-stdlib (subprocess to the Node browser boundary); grows as
