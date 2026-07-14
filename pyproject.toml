@@ -1,7 +1,7 @@
 [project]
 name = "provenance-gate"
 version = "0.0.1"
-description = "A deterministic, claim-level trust gate for agentic science, read-only over Claude Science."
+description = "A deterministic, read-only trust gate for agentic science over Claude Science."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []  # v0 is stdlib-only (sqlite3, http.server)
