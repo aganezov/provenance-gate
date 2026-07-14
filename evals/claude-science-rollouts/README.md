@@ -9,6 +9,23 @@ verdicts, and the project's provenance lineage — into an immutable, content-ha
 snapshot is the deliverable: a rollout that can be scored after the fact, re-scored, and compared
 byte-for-byte without ever going back to a live Claude Science.
 
+## Setup
+
+The Python side — the gate audit and this harness's control plane — is [uv](https://docs.astral.sh/uv/):
+`uv run …` installs the pinned deps on first use, so there's no separate step.
+
+The browser boundary is a Node subpackage (`browser/`) that drives Claude Science through Playwright.
+**`uv` does not install Node** — that side is set up separately:
+
+```sh
+node --version                # >= 20 (installed on its own; not via uv)
+cd browser && npm ci          # pinned install from package-lock.json
+npm test                      # 89 tests, against a mock boundary — no real browser needed
+```
+
+Driving *actual* rollouts additionally needs Playwright's browser binaries (`npx playwright install`)
+plus a running Claude Science and an authenticated browser profile — see [Preconditions](#preconditions).
+
 ## Run one rollout
 
 ```
