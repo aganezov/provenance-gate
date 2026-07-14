@@ -52,7 +52,7 @@ With [uv](https://docs.astral.sh/uv/):
 
 - **Build the skill** — inline `core/` into the zero-dependency kernel and package it for CS:
   ```sh
-  uv run python design/build_skill.py     # → design/skill_dist/provenance-gate.zip
+  uv run python design/build_skill.py --zip   # → design/skill_dist/provenance-gate.zip
   ```
   Upload that zip in Claude Science to install the skill (the six functions below).
 - **Serve the audit + cockpit** over a live operon:
